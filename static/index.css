@@ -118,12 +118,17 @@ body {
 .ghost-btn {
   padding: 0.35rem 0.65rem;
   border-radius: 7px;
-  border: none;
-  background-color: var(--subtle);
-  color: var(--text);
+  border: 1px solid var(--soft-btn-border);
+  background-color: var(--soft-btn-bg);
+  color: var(--soft-btn-text);
   font-size: 0.75rem;
   font-weight: 500;
   cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.ghost-btn:hover {
+  background-color: var(--soft-btn-hover);
 }
 
 .primary-btn {
