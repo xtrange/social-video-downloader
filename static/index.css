@@ -123,13 +123,20 @@ body {
   height: 44px;
   padding: 0 1.1rem;
   border-radius: 10px;
-  border: none;
+  border: 1px solid var(--primary);
   background-color: var(--primary);
   color: var(--primary-fg);
   font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
+  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+
+.primary-btn.secondary-mode {
+  background-color: var(--subtle);
+  color: var(--text);
+  border-color: var(--border);
 }
 
 .primary-btn:disabled {

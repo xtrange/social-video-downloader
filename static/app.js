@@ -14,6 +14,40 @@
   const videoDuration = document.getElementById('video-duration');
   const optionsList = document.getElementById('options-list');
 
+  let isResetMode = false;
+  let analyzedUrl = '';
+
+  function setButtonMode(mode) {
+    if (mode === 'loading') {
+      isResetMode = false;
+      submitBtn.disabled = true;
+      submitBtn.classList.remove('secondary-mode');
+      submitBtn.textContent = 'Analizando...';
+    } else if (mode === 'reset') {
+      isResetMode = true;
+      submitBtn.disabled = false;
+      submitBtn.classList.add('secondary-mode');
+      submitBtn.textContent = 'Probar otro enlace';
+    } else {
+      isResetMode = false;
+      submitBtn.disabled = false;
+      submitBtn.classList.remove('secondary-mode');
+      submitBtn.textContent = 'Continuar';
+    }
+  }
+
+  function resetAll() {
+    urlInput.value = '';
+    analyzedUrl = '';
+    clearBtn.classList.add('hidden');
+    pasteBtn.classList.remove('hidden');
+    resultBox.classList.add('hidden');
+    loadingBox.classList.add('hidden');
+    hideMessage();
+    setButtonMode('continue');
+    urlInput.focus();
+  }
+
   function formatDuration(secs) {
     const s = Math.max(1, Math.round(Number(secs) || 15));
     const m = Math.floor(s / 60);
@@ -37,13 +71,14 @@
 
     if (!url) {
       resultBox.classList.add('hidden');
+      setButtonMode('continue');
       showMessage('Pega el enlace del post para identificar las opciones disponibles.');
       return;
     }
 
     resultBox.classList.add('hidden');
     loadingBox.classList.remove('hidden');
-    submitBtn.disabled = true;
+    setButtonMode('loading');
 
     try {
       const res = await fetch('/api/info', {
@@ -55,12 +90,14 @@
       if (!res.ok) {
         throw new Error(data.detail || 'No se pudo analizar el enlace.');
       }
+      analyzedUrl = url;
       renderOptions(data);
+      setButtonMode('reset');
     } catch (err) {
+      setButtonMode('continue');
       showMessage(err.message || 'Enlace no compatible.');
     } finally {
       loadingBox.classList.add('hidden');
-      submitBtn.disabled = false;
     }
   }
 
@@ -135,10 +172,16 @@
   }
 
   urlInput.addEventListener('input', () => {
-    const hasVal = urlInput.value.trim().length > 0;
+    const val = urlInput.value.trim();
+    const hasVal = val.length > 0;
     clearBtn.classList.toggle('hidden', !hasVal);
     pasteBtn.classList.toggle('hidden', hasVal);
     hideMessage();
+    if (val !== analyzedUrl) {
+      setButtonMode('continue');
+    } else if (analyzedUrl && !resultBox.classList.contains('hidden')) {
+      setButtonMode('reset');
+    }
   });
 
   urlInput.addEventListener('paste', () => {
@@ -166,15 +209,15 @@
   });
 
   clearBtn.addEventListener('click', () => {
-    urlInput.value = '';
-    urlInput.dispatchEvent(new Event('input'));
-    resultBox.classList.add('hidden');
-    hideMessage();
-    urlInput.focus();
+    resetAll();
   });
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    processUrl(urlInput.value);
+    if (isResetMode) {
+      resetAll();
+    } else {
+      processUrl(urlInput.value);
+    }
   });
 })();
