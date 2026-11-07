@@ -7,6 +7,10 @@
   --muted: #64748b;
   --primary: #0f172a;
   --primary-fg: #ffffff;
+  --soft-btn-bg: #e0f2fe;
+  --soft-btn-text: #0369a1;
+  --soft-btn-border: #bae6fd;
+  --soft-btn-hover: #bae6fd;
   --radius: 14px;
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
@@ -22,6 +26,10 @@
     --muted: #94a3b8;
     --primary: #f8fafc;
     --primary-fg: #0f172a;
+    --soft-btn-bg: rgba(14, 165, 233, 0.15);
+    --soft-btn-text: #7dd3fc;
+    --soft-btn-border: rgba(56, 189, 248, 0.3);
+    --soft-btn-hover: rgba(14, 165, 233, 0.24);
   }
 }
 
@@ -134,9 +142,13 @@ body {
 }
 
 .primary-btn.secondary-mode {
-  background-color: var(--subtle);
-  color: var(--text);
-  border-color: var(--border);
+  background-color: var(--soft-btn-bg);
+  color: var(--soft-btn-text);
+  border-color: var(--soft-btn-border);
+}
+
+.primary-btn.secondary-mode:hover {
+  background-color: var(--soft-btn-hover);
 }
 
 .primary-btn:disabled {
