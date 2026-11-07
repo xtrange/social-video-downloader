@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Descargar Video</title>
+  <meta name="description" content="Pega el enlace de un video de Facebook, Instagram, TikTok o X para descargarlo." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/index.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="card" aria-label="Descargador de video">
+      <header class="card-header">
+        <h1>Descargar video</h1>
+        <p>Pega el enlace del post. Identificaremos la fuente y las opciones de descarga automáticamente.</p>
+      </header>
+
+      <form id="dl-form" class="input-bar" novalidate>
+        <div class="input-field-wrap">
+          <input
+            type="url"
+            id="url-input"
+            class="url-input"
+            placeholder="https://..."
+            autocomplete="off"
+            spellcheck="false"
+            required
+          />
+          <div class="inline-actions">
+            <button type="button" id="paste-btn" class="ghost-btn">Pegar</button>
+            <button type="button" id="clear-btn" class="ghost-btn hidden">Borrar</button>
+          </div>
+        </div>
+        <button type="submit" id="submit-btn" class="primary-btn">Continuar</button>
+      </form>
+
+      <div id="feedback-box" class="feedback hidden" role="status"></div>
+
+      <div id="loading-box" class="loading hidden" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Identificando fuente y formatos disponibles...</span>
+      </div>
+
+      <div id="result-box" class="result hidden" aria-live="polite">
+        <div class="result-header">
+          <div class="result-meta">
+            <span id="source-badge" class="source-badge">Fuente</span>
+            <span id="video-title" class="video-title"></span>
+          </div>
+          <span id="video-duration" class="video-duration"></span>
+        </div>
+
+        <div id="options-list" class="options-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
