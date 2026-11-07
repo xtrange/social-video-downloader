@@ -56,99 +56,99 @@ SOURCE_SPECIFIC_OPTIONS = {
     "tiktok": {
         "source_label": "TikTok",
         "options": [
-            {"id": "hd", "label": "MP4 · Sin marca de agua (HD)", "meta": "1080p · Vídeo limpio", "ext": "mp4", "primary": True},
+            {"id": "audio", "label": "Audio original", "meta": "M4A / MP3 · Solo audio (Más liviano)", "ext": "m4a", "primary": True},
             {"id": "sd", "label": "MP4 · Calidad estándar", "meta": "720p · Carga rápida", "ext": "mp4", "primary": False},
-            {"id": "audio", "label": "Audio original", "meta": "M4A / MP3 · Solo audio", "ext": "m4a", "primary": False},
+            {"id": "hd", "label": "MP4 · Sin marca de agua (HD)", "meta": "1080p · Máxima definición", "ext": "mp4", "primary": False},
         ],
     },
     "instagram": {
         "source_label": "Instagram",
         "options": [
-            {"id": "hd", "label": "MP4 · Resolución original (Full HD)", "meta": "1080p · Reel / Post", "ext": "mp4", "primary": True},
+            {"id": "audio", "label": "Pista de audio", "meta": "M4A / MP3 · Solo audio (Más liviano)", "ext": "m4a", "primary": True},
             {"id": "sd", "label": "MP4 · Calidad media", "meta": "720p · Ligero", "ext": "mp4", "primary": False},
-            {"id": "audio", "label": "Pista de audio", "meta": "M4A / MP3 · Solo audio", "ext": "m4a", "primary": False},
+            {"id": "hd", "label": "MP4 · Resolución original (Full HD)", "meta": "1080p · Reel / Post", "ext": "mp4", "primary": False},
         ],
     },
     "x": {
         "source_label": "X (Twitter)",
         "options": [
-            {"id": "hd", "label": "MP4 · Alta definición (1080p)", "meta": "1080p · Máxima calidad", "ext": "mp4", "primary": True},
+            {"id": "low", "label": "MP4 · Ligero para móvil (360p)", "meta": "360p · Menor tamaño", "ext": "mp4", "primary": True},
             {"id": "sd", "label": "MP4 · Definición estándar (720p)", "meta": "720p · Balanceado", "ext": "mp4", "primary": False},
-            {"id": "low", "label": "MP4 · Ligero para móvil (360p)", "meta": "360p · Menor tamaño", "ext": "mp4", "primary": False},
+            {"id": "hd", "label": "MP4 · Alta definición (1080p)", "meta": "1080p · Máxima calidad", "ext": "mp4", "primary": False},
         ],
     },
     "facebook": {
         "source_label": "Facebook",
         "options": [
-            {"id": "hd", "label": "MP4 · Calidad HD", "meta": "1080p / 720p · Alta definición", "ext": "mp4", "primary": True},
+            {"id": "audio", "label": "Solo audio", "meta": "M4A / MP3 · Pista de audio (Más liviano)", "ext": "m4a", "primary": True},
             {"id": "sd", "label": "MP4 · Calidad SD", "meta": "480p · Estándar", "ext": "mp4", "primary": False},
-            {"id": "audio", "label": "Solo audio", "meta": "M4A / MP3 · Pista de audio", "ext": "m4a", "primary": False},
+            {"id": "hd", "label": "MP4 · Calidad HD", "meta": "1080p / 720p · Alta definición", "ext": "mp4", "primary": False},
         ],
     },
     "pinterest": {
         "source_label": "Pinterest",
         "options": [
-            {"id": "hd", "label": "MP4 · Video Pin Original (HD)", "meta": "1080p / 720p · Alta calidad", "ext": "mp4", "primary": True},
-            {"id": "sd", "label": "MP4 · Calidad ligera", "meta": "480p · Rápido", "ext": "mp4", "primary": False},
+            {"id": "sd", "label": "MP4 · Calidad ligera", "meta": "480p · Menor tamaño", "ext": "mp4", "primary": True},
+            {"id": "hd", "label": "MP4 · Video Pin Original (HD)", "meta": "1080p / 720p · Alta calidad", "ext": "mp4", "primary": False},
         ],
     },
     "threads": {
         "source_label": "Threads",
         "options": [
-            {"id": "hd", "label": "MP4 · Calidad original (HD)", "meta": "1080p · Video de Threads", "ext": "mp4", "primary": True},
+            {"id": "audio", "label": "Solo audio", "meta": "M4A / MP3 · Audio del post (Más liviano)", "ext": "m4a", "primary": True},
             {"id": "sd", "label": "MP4 · Calidad estándar", "meta": "720p · Compacto", "ext": "mp4", "primary": False},
-            {"id": "audio", "label": "Solo audio", "meta": "M4A / MP3 · Audio del post", "ext": "m4a", "primary": False},
+            {"id": "hd", "label": "MP4 · Calidad original (HD)", "meta": "1080p · Video de Threads", "ext": "mp4", "primary": False},
         ],
     },
     "linkedin": {
         "source_label": "LinkedIn",
         "options": [
-            {"id": "hd", "label": "MP4 · Presentación / Post HD", "meta": "1080p / 720p · Alta nitidez", "ext": "mp4", "primary": True},
-            {"id": "sd", "label": "MP4 · Versión ligera", "meta": "480p · Menor peso", "ext": "mp4", "primary": False},
+            {"id": "sd", "label": "MP4 · Versión ligera", "meta": "480p · Menor peso", "ext": "mp4", "primary": True},
+            {"id": "hd", "label": "MP4 · Presentación / Post HD", "meta": "1080p / 720p · Alta nitidez", "ext": "mp4", "primary": False},
         ],
     },
     "reddit": {
         "source_label": "Reddit",
         "options": [
-            {"id": "hd", "label": "MP4 · Video de Reddit (HD)", "meta": "1080p / 720p · Formato MP4", "ext": "mp4", "primary": True},
-            {"id": "sd", "label": "MP4 · Compacto para compartir", "meta": "480p · Ideal para WhatsApp", "ext": "mp4", "primary": False},
+            {"id": "sd", "label": "MP4 · Compacto para compartir", "meta": "480p · Ideal para WhatsApp", "ext": "mp4", "primary": True},
+            {"id": "hd", "label": "MP4 · Video de Reddit (HD)", "meta": "1080p / 720p · Máxima calidad", "ext": "mp4", "primary": False},
         ],
     },
     "youtube": {
         "source_label": "YouTube / Shorts",
         "options": [
-            {"id": "hd", "label": "MP4 · Alta definición (HD)", "meta": "1080p / 720p · Video + Audio", "ext": "mp4", "primary": True},
+            {"id": "audio", "label": "Solo Audio", "meta": "M4A / MP3 · Pista de audio (Más liviano)", "ext": "m4a", "primary": True},
             {"id": "sd", "label": "MP4 · Calidad estándar", "meta": "480p / 360p · Ligero", "ext": "mp4", "primary": False},
-            {"id": "audio", "label": "Solo Audio", "meta": "M4A / MP3 · Pista de audio", "ext": "m4a", "primary": False},
+            {"id": "hd", "label": "MP4 · Alta definición (HD)", "meta": "1080p / 720p · Video + Audio", "ext": "mp4", "primary": False},
         ],
     },
     "twitch": {
         "source_label": "Twitch",
         "options": [
-            {"id": "hd", "label": "MP4 · Clip en Full HD (1080p)", "meta": "1080p 60fps · Calidad original", "ext": "mp4", "primary": True},
-            {"id": "sd", "label": "MP4 · Clip en 720p", "meta": "720p · Listo para editar", "ext": "mp4", "primary": False},
+            {"id": "sd", "label": "MP4 · Clip en 720p", "meta": "720p · Menor peso", "ext": "mp4", "primary": True},
+            {"id": "hd", "label": "MP4 · Clip en Full HD (1080p)", "meta": "1080p 60fps · Calidad original", "ext": "mp4", "primary": False},
         ],
     },
     "kick": {
         "source_label": "Kick",
         "options": [
-            {"id": "hd", "label": "MP4 · Clip en Full HD", "meta": "1080p · Calidad original", "ext": "mp4", "primary": True},
-            {"id": "sd", "label": "MP4 · Calidad media (720p)", "meta": "720p · Rápido", "ext": "mp4", "primary": False},
+            {"id": "sd", "label": "MP4 · Calidad media (720p)", "meta": "720p · Menor peso", "ext": "mp4", "primary": True},
+            {"id": "hd", "label": "MP4 · Clip en Full HD", "meta": "1080p · Calidad original", "ext": "mp4", "primary": False},
         ],
     },
     "vimeo": {
         "source_label": "Vimeo",
         "options": [
-            {"id": "hd", "label": "MP4 · Master HD (1080p)", "meta": "Alta tasa de bits · MP4", "ext": "mp4", "primary": True},
+            {"id": "audio", "label": "Solo Audio", "meta": "M4A / MP3 · Pista limpia (Más liviano)", "ext": "m4a", "primary": True},
             {"id": "sd", "label": "MP4 · Definición estándar (720p)", "meta": "720p · Balanceado", "ext": "mp4", "primary": False},
-            {"id": "audio", "label": "Solo Audio", "meta": "M4A / MP3 · Pista limpia", "ext": "m4a", "primary": False},
+            {"id": "hd", "label": "MP4 · Master HD (1080p)", "meta": "Alta tasa de bits · MP4", "ext": "mp4", "primary": False},
         ],
     },
     "bluesky": {
         "source_label": "Bluesky",
         "options": [
-            {"id": "hd", "label": "MP4 · Video en alta definición", "meta": "1080p / 720p · MP4", "ext": "mp4", "primary": True},
-            {"id": "sd", "label": "MP4 · Ligero", "meta": "480p · Rápido", "ext": "mp4", "primary": False},
+            {"id": "sd", "label": "MP4 · Ligero", "meta": "480p · Menor tamaño", "ext": "mp4", "primary": True},
+            {"id": "hd", "label": "MP4 · Video en alta definición", "meta": "1080p / 720p · MP4", "ext": "mp4", "primary": False},
         ],
     },
 }
