@@ -19,8 +19,12 @@ STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(
     title="Video Downloader API",
-    description="Extrae y descarga videos de Facebook, Instagram, TikTok y X automáticamente a partir del link.",
-    version="2.2.0",
+    description=(
+        "Extrae y descarga videos automáticamente a partir del link desde "
+        "Facebook, Instagram, TikTok, X, Pinterest, Threads, LinkedIn, Reddit, "
+        "YouTube/Shorts, Twitch, Kick, Vimeo y Bluesky."
+    ),
+    version="2.3.0",
 )
 
 if STATIC_DIR.exists():
@@ -34,9 +38,18 @@ DEFAULT_UA = (
 
 PLATFORM_PATTERNS = {
     "facebook": re.compile(r"(?:https?://)?(?:www\.|m\.|web\.)?(?:facebook\.com|fb\.watch|fb\.com)/.+", re.I),
-    "instagram": re.compile(r"(?:https?://)?(?:www\.)?(?:instagram\.com|instagr\.am)/(?:p|reel|reels|tv|stories)/.+", re.I),
+    "instagram": re.compile(r"(?:https?://)?(?:www\.)?(?:instagram\.com|instagr\.am)/.+", re.I),
     "tiktok": re.compile(r"(?:https?://)?(?:www\.|vm\.|vt\.)?tiktok\.com/.+", re.I),
-    "x": re.compile(r"(?:https?://)?(?:www\.|mobile\.)?(?:twitter\.com|x\.com)/.+", re.I),
+    "x": re.compile(r"(?:https?://)?(?:www\.|mobile\.)?(?:twitter\.com|x\.com|t\.co)/.+", re.I),
+    "pinterest": re.compile(r"(?:https?://)?(?:[a-z]{2}\.|www\.)?(?:pinterest\.[a-z.]+|pin\.it)/.+", re.I),
+    "threads": re.compile(r"(?:https?://)?(?:www\.)?threads\.(?:net|com)/.+", re.I),
+    "linkedin": re.compile(r"(?:https?://)?(?:[a-z]{2}\.|www\.)?(?:linkedin\.com|lnkd\.in)/.+", re.I),
+    "reddit": re.compile(r"(?:https?://)?(?:www\.|old\.|v\.)?(?:reddit\.com|redd\.it)/.+", re.I),
+    "youtube": re.compile(r"(?:https?://)?(?:www\.|m\.)?(?:youtube\.com|youtu\.be)/.+", re.I),
+    "twitch": re.compile(r"(?:https?://)?(?:www\.|clips\.|m\.)?twitch\.tv/.+", re.I),
+    "kick": re.compile(r"(?:https?://)?(?:www\.)?kick\.com/.+", re.I),
+    "vimeo": re.compile(r"(?:https?://)?(?:www\.|player\.)?vimeo\.com/.+", re.I),
+    "bluesky": re.compile(r"(?:https?://)?(?:www\.)?bsky\.app/.+", re.I),
 }
 
 SOURCE_SPECIFIC_OPTIONS = {
@@ -72,6 +85,72 @@ SOURCE_SPECIFIC_OPTIONS = {
             {"id": "audio", "label": "Solo audio", "meta": "M4A / MP3 · Pista de audio", "ext": "m4a", "primary": False},
         ],
     },
+    "pinterest": {
+        "source_label": "Pinterest",
+        "options": [
+            {"id": "hd", "label": "MP4 · Video Pin Original (HD)", "meta": "1080p / 720p · Alta calidad", "ext": "mp4", "primary": True},
+            {"id": "sd", "label": "MP4 · Calidad ligera", "meta": "480p · Rápido", "ext": "mp4", "primary": False},
+        ],
+    },
+    "threads": {
+        "source_label": "Threads",
+        "options": [
+            {"id": "hd", "label": "MP4 · Calidad original (HD)", "meta": "1080p · Video de Threads", "ext": "mp4", "primary": True},
+            {"id": "sd", "label": "MP4 · Calidad estándar", "meta": "720p · Compacto", "ext": "mp4", "primary": False},
+            {"id": "audio", "label": "Solo audio", "meta": "M4A / MP3 · Audio del post", "ext": "m4a", "primary": False},
+        ],
+    },
+    "linkedin": {
+        "source_label": "LinkedIn",
+        "options": [
+            {"id": "hd", "label": "MP4 · Presentación / Post HD", "meta": "1080p / 720p · Alta nitidez", "ext": "mp4", "primary": True},
+            {"id": "sd", "label": "MP4 · Versión ligera", "meta": "480p · Menor peso", "ext": "mp4", "primary": False},
+        ],
+    },
+    "reddit": {
+        "source_label": "Reddit",
+        "options": [
+            {"id": "hd", "label": "MP4 · Video de Reddit (HD)", "meta": "1080p / 720p · Formato MP4", "ext": "mp4", "primary": True},
+            {"id": "sd", "label": "MP4 · Compacto para compartir", "meta": "480p · Ideal para WhatsApp", "ext": "mp4", "primary": False},
+        ],
+    },
+    "youtube": {
+        "source_label": "YouTube / Shorts",
+        "options": [
+            {"id": "hd", "label": "MP4 · Alta definición (HD)", "meta": "1080p / 720p · Video + Audio", "ext": "mp4", "primary": True},
+            {"id": "sd", "label": "MP4 · Calidad estándar", "meta": "480p / 360p · Ligero", "ext": "mp4", "primary": False},
+            {"id": "audio", "label": "Solo Audio", "meta": "M4A / MP3 · Pista de audio", "ext": "m4a", "primary": False},
+        ],
+    },
+    "twitch": {
+        "source_label": "Twitch",
+        "options": [
+            {"id": "hd", "label": "MP4 · Clip en Full HD (1080p)", "meta": "1080p 60fps · Calidad original", "ext": "mp4", "primary": True},
+            {"id": "sd", "label": "MP4 · Clip en 720p", "meta": "720p · Listo para editar", "ext": "mp4", "primary": False},
+        ],
+    },
+    "kick": {
+        "source_label": "Kick",
+        "options": [
+            {"id": "hd", "label": "MP4 · Clip en Full HD", "meta": "1080p · Calidad original", "ext": "mp4", "primary": True},
+            {"id": "sd", "label": "MP4 · Calidad media (720p)", "meta": "720p · Rápido", "ext": "mp4", "primary": False},
+        ],
+    },
+    "vimeo": {
+        "source_label": "Vimeo",
+        "options": [
+            {"id": "hd", "label": "MP4 · Master HD (1080p)", "meta": "Alta tasa de bits · MP4", "ext": "mp4", "primary": True},
+            {"id": "sd", "label": "MP4 · Definición estándar (720p)", "meta": "720p · Balanceado", "ext": "mp4", "primary": False},
+            {"id": "audio", "label": "Solo Audio", "meta": "M4A / MP3 · Pista limpia", "ext": "m4a", "primary": False},
+        ],
+    },
+    "bluesky": {
+        "source_label": "Bluesky",
+        "options": [
+            {"id": "hd", "label": "MP4 · Video en alta definición", "meta": "1080p / 720p · MP4", "ext": "mp4", "primary": True},
+            {"id": "sd", "label": "MP4 · Ligero", "meta": "480p · Rápido", "ext": "mp4", "primary": False},
+        ],
+    },
 }
 
 
@@ -98,6 +177,24 @@ def detect_platform(url: str) -> Optional[str]:
             return "tiktok"
         if "twitter." in host or host == "x.com" or host.endswith(".x.com") or host == "t.co":
             return "x"
+        if "pinterest." in host or host == "pin.it":
+            return "pinterest"
+        if "threads.net" in host or "threads.com" in host:
+            return "threads"
+        if "linkedin.com" in host or host == "lnkd.in":
+            return "linkedin"
+        if "reddit.com" in host or "redd.it" in host:
+            return "reddit"
+        if "youtube.com" in host or host == "youtu.be":
+            return "youtube"
+        if "twitch.tv" in host:
+            return "twitch"
+        if "kick.com" in host:
+            return "kick"
+        if "vimeo.com" in host:
+            return "vimeo"
+        if "bsky.app" in host:
+            return "bluesky"
     except Exception:
         return None
     return None
@@ -108,7 +205,6 @@ def select_format_stream(info: dict, quality: str) -> tuple[Optional[str], dict,
     formats = info.get("formats") or []
     base_headers = info.get("http_headers") or {"User-Agent": DEFAULT_UA}
 
-    # Prefer progressive HTTP/HTTPS URLs (not m3u8 manifest playlists) so the browser receives a real MP4/M4A file
     progressive = [
         f for f in formats
         if f.get("url")
@@ -168,7 +264,10 @@ async def extract_video_info(payload: UrlRequest):
     if not platform:
         raise HTTPException(
             status_code=400,
-            detail="Enlace no reconocido. Pega un link válido de Facebook, Instagram, TikTok o X.",
+            detail=(
+                "Enlace no reconocido. Soportamos Facebook, Instagram, TikTok, X, "
+                "Pinterest, Threads, LinkedIn, Reddit, YouTube, Twitch, Kick, Vimeo y Bluesky."
+            ),
         )
 
     profile = SOURCE_SPECIFIC_OPTIONS[platform]
@@ -216,7 +315,6 @@ async def download_video(
     tmp_dir = tempfile.mkdtemp(prefix="dl_")
     output_template = os.path.join(tmp_dir, "media.%(ext)s")
 
-    # 1. Try downloading via yt-dlp directly into /tmp (works on both local and Vercel /tmp up to response limits)
     has_ffmpeg = shutil.which("ffmpeg") is not None
 
     if quality == "audio":
@@ -265,7 +363,6 @@ async def download_video(
 
     cleanup_temp_dir(tmp_dir)
 
-    # 2. Fallback: Stream the direct CDN URL through the server with Content-Disposition: attachment
     try:
         info_opts = {
             "quiet": True,
