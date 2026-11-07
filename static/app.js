@@ -120,7 +120,7 @@
       }
 
       const blob = await response.blob();
-      const filename = `video_${platform || 'social'}_${quality}.${ext || 'mp4'}`;
+      const filename = `ddx_${platform || 'video'}_${quality}.${ext || 'mp4'}`;
       const blobUrl = URL.createObjectURL(blob);
 
       const a = document.createElement('a');

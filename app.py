@@ -306,6 +306,32 @@ def cleanup_temp_dir(path: str) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+@app.get("/robots.txt")
+async def robots_txt():
+    from fastapi.responses import PlainTextResponse
+    content = "User-agent: *\nAllow: /\nSitemap: https://ddx.cl/sitemap.xml\n"
+    return PlainTextResponse(content)
+
+
+@app.get("/sitemap.xml")
+async def sitemap_xml():
+    from fastapi.responses import Response
+    urls = [
+        "https://ddx.cl/",
+        "https://ddx.cl/bajar-video-instagram",
+        "https://ddx.cl/bajar-video-tiktok",
+        "https://ddx.cl/bajar-video-facebook",
+        "https://ddx.cl/bajar-video-x",
+        "https://ddx.cl/bajar-video-pinterest",
+        "https://ddx.cl/bajar-video-threads",
+        "https://ddx.cl/bajar-video-linkedin",
+        "https://ddx.cl/bajar-video-reddit",
+    ]
+    items = "".join(f"<url><loc>{u}</loc><changefreq>weekly</changefreq><priority>0.9</priority></url>" for u in urls)
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</urlset>'
+    return Response(content=xml, media_type="application/xml")
+
+
 @app.get("/api/download")
 async def download_video(
     url: str = Query(...),
@@ -350,7 +376,7 @@ async def download_video(
             chosen_file = os.path.join(tmp_dir, files[0])
             ext = os.path.splitext(chosen_file)[1].lstrip(".") or ("m4a" if quality == "audio" else "mp4")
             media_type = "audio/mp4" if ext in ("m4a", "mp3") else "video/mp4"
-            filename = f"video_{platform}_{quality}.{ext}"
+            filename = f"ddx_{platform}_{quality}.{ext}"
             return FileResponse(
                 path=chosen_file,
                 filename=filename,
@@ -380,7 +406,7 @@ async def download_video(
         if not stream_url:
             raise HTTPException(status_code=422, detail="No se encontró un enlace de descarga directa.")
 
-        filename = f"video_{platform}_{quality}.{ext}"
+        filename = f"ddx_{platform}_{quality}.{ext}"
         media_type = "audio/mp4" if ext in ("m4a", "mp3") else "video/mp4"
 
         async def stream_generator():

@@ -16,6 +16,10 @@
       "dest": "app.py"
     },
     {
+      "src": "/(robots\\.txt|sitemap\\.xml)",
+      "dest": "app.py"
+    },
+    {
       "src": "/static/(.*)",
       "dest": "/static/$1"
     },
