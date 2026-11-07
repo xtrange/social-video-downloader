@@ -1,15 +1,15 @@
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+import httpx
 import yt_dlp
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
@@ -20,11 +20,17 @@ STATIC_DIR = BASE_DIR / "static"
 app = FastAPI(
     title="Video Downloader API",
     description="Extrae y descarga videos de Facebook, Instagram, TikTok y X automáticamente a partir del link.",
-    version="2.1.0",
+    version="2.2.0",
 )
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+DEFAULT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 
 PLATFORM_PATTERNS = {
     "facebook": re.compile(r"(?:https?://)?(?:www\.|m\.|web\.)?(?:facebook\.com|fb\.watch|fb\.com)/.+", re.I),
@@ -97,37 +103,57 @@ def detect_platform(url: str) -> Optional[str]:
     return None
 
 
-def extract_direct_urls(info: dict, base_options: list[dict]) -> list[dict]:
-    """Extracts direct CDN URLs from yt-dlp info dict so Vercel Serverless can link directly without 4.5MB payload limits."""
+def select_format_stream(info: dict, quality: str) -> tuple[Optional[str], dict, str]:
+    """Selects the best matching direct stream URL, headers, and extension from yt-dlp info."""
     formats = info.get("formats") or []
+    base_headers = info.get("http_headers") or {"User-Agent": DEFAULT_UA}
+
+    # Prefer progressive HTTP/HTTPS URLs (not m3u8 manifest playlists) so the browser receives a real MP4/M4A file
     progressive = [
         f for f in formats
-        if f.get("url") and f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none")
+        if f.get("url")
+        and f.get("vcodec") not in (None, "none")
+        and f.get("acodec") not in (None, "none")
+        and not str(f.get("protocol", "")).startswith("m3u8")
+        and ".m3u8" not in str(f.get("url", ""))
     ]
+    if not progressive:
+        progressive = [
+            f for f in formats
+            if f.get("url") and f.get("vcodec") not in (None, "none") and not str(f.get("protocol", "")).startswith("m3u8")
+        ]
+
     audio_only = [
         f for f in formats
-        if f.get("url") and f.get("vcodec") in (None, "none") and f.get("acodec") not in (None, "none")
+        if f.get("url")
+        and f.get("vcodec") in (None, "none")
+        and f.get("acodec") not in (None, "none")
+        and not str(f.get("protocol", "")).startswith("m3u8")
     ]
 
     progressive.sort(key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True)
     audio_only.sort(key=lambda f: (f.get("abr") or f.get("tbr") or 0), reverse=True)
 
-    fallback_url = info.get("url") or (progressive[0]["url"] if progressive else None)
-    hd_url = progressive[0]["url"] if progressive else fallback_url
-    sd_candidates = [f for f in progressive if (f.get("height") or 0) <= 720]
-    sd_url = sd_candidates[0]["url"] if sd_candidates else hd_url
-    low_candidates = [f for f in progressive if (f.get("height") or 0) <= 480]
-    low_url = low_candidates[0]["url"] if low_candidates else sd_url
-    audio_url = audio_only[0]["url"] if audio_only else sd_url
+    chosen = None
+    if quality == "audio" and audio_only:
+        chosen = audio_only[0]
+    elif quality == "low" and progressive:
+        low_cands = [f for f in progressive if (f.get("height") or 0) <= 480]
+        chosen = low_cands[0] if low_cands else progressive[-1]
+    elif quality == "sd" and progressive:
+        sd_cands = [f for f in progressive if (f.get("height") or 0) <= 720]
+        chosen = sd_cands[0] if sd_cands else progressive[0]
+    elif progressive:
+        chosen = progressive[0]
 
-    url_map = {"hd": hd_url, "sd": sd_url, "low": low_url, "audio": audio_url}
+    if chosen:
+        ext = chosen.get("ext") or ("m4a" if quality == "audio" else "mp4")
+        headers = dict(base_headers)
+        if chosen.get("http_headers"):
+            headers.update(chosen["http_headers"])
+        return chosen["url"], headers, ext
 
-    enriched = []
-    for opt in base_options:
-        copy_opt = dict(opt)
-        copy_opt["direct_url"] = url_map.get(opt["id"]) or fallback_url
-        enriched.append(copy_opt)
-    return enriched
+    return info.get("url"), dict(base_headers), ("m4a" if quality == "audio" else "mp4")
 
 
 @app.get("/")
@@ -152,14 +178,8 @@ async def extract_video_info(payload: UrlRequest):
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
-        "socket_timeout": 10,
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
+        "socket_timeout": 12,
+        "http_headers": {"User-Agent": DEFAULT_UA},
     }
 
     try:
@@ -168,24 +188,19 @@ async def extract_video_info(payload: UrlRequest):
             if "entries" in info and info["entries"]:
                 info = info["entries"][0]
 
-            options = extract_direct_urls(info, profile["options"])
             return {
                 "original_url": url,
                 "platform": platform,
                 "source_label": profile["source_label"],
                 "title": info.get("title") or info.get("description") or f"Video de {profile['source_label']}",
                 "duration": info.get("duration") or 15,
-                "options": options,
+                "options": profile["options"],
             }
-    except Exception:
-        return {
-            "original_url": url,
-            "platform": platform,
-            "source_label": profile["source_label"],
-            "title": f"Publicación de {profile['source_label']} ({url[:40]}...)",
-            "duration": 15,
-            "options": profile["options"],
-        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No se pudo extraer el video. Verifica que el post sea público ({str(exc)[:120]}).",
+        )
 
 
 def cleanup_temp_dir(path: str) -> None:
@@ -198,63 +213,96 @@ async def download_video(
     quality: str = Query("hd"),
 ):
     platform = detect_platform(url) or "video"
-    is_serverless = bool(os.environ.get("VERCEL")) or shutil.which("ffmpeg") is None
-
-    if is_serverless:
-        ydl_opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if "entries" in info and info["entries"]:
-                info = info["entries"][0]
-            profile = SOURCE_SPECIFIC_OPTIONS.get(platform, SOURCE_SPECIFIC_OPTIONS["tiktok"])
-            opts = extract_direct_urls(info, profile["options"])
-            chosen = next((o for o in opts if o["id"] == quality), opts[0])
-            if chosen.get("direct_url"):
-                return RedirectResponse(url=chosen["direct_url"], status_code=302)
-
     tmp_dir = tempfile.mkdtemp(prefix="dl_")
     output_template = os.path.join(tmp_dir, "media.%(ext)s")
 
+    # 1. Try downloading via yt-dlp directly into /tmp (works on both local and Vercel /tmp up to response limits)
+    has_ffmpeg = shutil.which("ffmpeg") is not None
+
     if quality == "audio":
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": output_template,
-            "noplaylist": True,
-            "quiet": True,
-            "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
-        }
-    elif quality in ("sd", "low"):
-        max_h = 480 if quality == "low" else 720
-        ydl_opts = {
-            "format": f"best[height<={max_h}][ext=mp4]/best[height<={max_h}]/best",
-            "merge_output_format": "mp4",
-            "outtmpl": output_template,
-            "noplaylist": True,
-            "quiet": True,
-        }
+        fmt_str = "bestaudio[ext=m4a]/bestaudio/best"
+    elif quality == "low":
+        fmt_str = "best[height<=480][ext=mp4]/best[height<=480]/best"
+    elif quality == "sd":
+        fmt_str = "best[height<=720][ext=mp4]/best[height<=720]/best"
     else:
-        ydl_opts = {
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "merge_output_format": "mp4",
-            "outtmpl": output_template,
-            "noplaylist": True,
+        fmt_str = (
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+            if has_ffmpeg
+            else "best[ext=mp4]/best"
+        )
+
+    ydl_opts = {
+        "format": fmt_str,
+        "outtmpl": output_template,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "http_headers": {"User-Agent": DEFAULT_UA},
+    }
+    if has_ffmpeg and quality != "audio":
+        ydl_opts["merge_output_format"] = "mp4"
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.extract_info(url, download=True)
+
+        files = os.listdir(tmp_dir)
+        if files:
+            chosen_file = os.path.join(tmp_dir, files[0])
+            ext = os.path.splitext(chosen_file)[1].lstrip(".") or ("m4a" if quality == "audio" else "mp4")
+            media_type = "audio/mp4" if ext in ("m4a", "mp3") else "video/mp4"
+            filename = f"video_{platform}_{quality}.{ext}"
+            return FileResponse(
+                path=chosen_file,
+                filename=filename,
+                media_type=media_type,
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                background=BackgroundTask(cleanup_temp_dir, tmp_dir),
+            )
+    except Exception:
+        pass
+
+    cleanup_temp_dir(tmp_dir)
+
+    # 2. Fallback: Stream the direct CDN URL through the server with Content-Disposition: attachment
+    try:
+        info_opts = {
             "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+            "http_headers": {"User-Agent": DEFAULT_UA},
         }
+        with yt_dlp.YoutubeDL(info_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if "entries" in info and info["entries"]:
+                info = info["entries"][0]
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.extract_info(url, download=True)
+        stream_url, req_headers, ext = select_format_stream(info, quality)
+        if not stream_url:
+            raise HTTPException(status_code=422, detail="No se encontró un enlace de descarga directa.")
 
-    files = os.listdir(tmp_dir)
-    if not files:
-        cleanup_temp_dir(tmp_dir)
-        raise HTTPException(status_code=422, detail="No se pudo generar el archivo.")
+        filename = f"video_{platform}_{quality}.{ext}"
+        media_type = "audio/mp4" if ext in ("m4a", "mp3") else "video/mp4"
 
-    chosen_file = os.path.join(tmp_dir, files[0])
-    ext = os.path.splitext(chosen_file)[1].lstrip(".") or ("mp3" if quality == "audio" else "mp4")
-    media_type = "audio/mpeg" if ext == "mp3" else "video/mp4"
-    return FileResponse(
-        path=chosen_file,
-        filename=f"{platform}_{quality}.{ext}",
-        media_type=media_type,
-        background=BackgroundTask(cleanup_temp_dir, tmp_dir),
-    )
+        async def stream_generator():
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                async with client.stream("GET", stream_url, headers=req_headers) as resp:
+                    resp.raise_for_status()
+                    async for chunk in resp.aiter_bytes(chunk_size=65536):
+                        yield chunk
+
+        return StreamingResponse(
+            stream_generator(),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No se pudo descargar el archivo: {str(exc)[:120]}",
+        )

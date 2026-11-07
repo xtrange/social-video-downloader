@@ -64,6 +64,43 @@
     }
   }
 
+  async function triggerFileDownload(url, quality, ext, platform, btn) {
+    const originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Descargando...';
+    hideMessage();
+
+    try {
+      const params = new URLSearchParams({ url, quality });
+      const response = await fetch(`/api/download?${params.toString()}`);
+      if (!response.ok) {
+        let detail = 'No se pudo descargar el archivo.';
+        try {
+          const errData = await response.json();
+          if (errData.detail) detail = errData.detail;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+
+      const blob = await response.blob();
+      const filename = `video_${platform || 'social'}_${quality}.${ext || 'mp4'}`;
+      const blobUrl = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    } catch (err) {
+      showMessage(err.message || 'Error al descargar el video.');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+    }
+  }
+
   function renderOptions(data) {
     sourceBadge.textContent = data.source_label || data.platform;
     videoTitle.textContent = data.title || '';
@@ -86,12 +123,7 @@
       btn.textContent = 'Descargar';
 
       btn.addEventListener('click', () => {
-        if (opt.direct_url) {
-          window.open(opt.direct_url, '_blank', 'noopener,noreferrer');
-        } else {
-          const params = new URLSearchParams({ url: data.original_url, quality: opt.id });
-          window.location.href = `/api/download?${params.toString()}`;
-        }
+        triggerFileDownload(data.original_url, opt.id, opt.ext, data.platform, btn);
       });
 
       row.appendChild(left);
