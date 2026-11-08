@@ -247,6 +247,8 @@ def build_exact_blocks_from_info(info: dict) -> tuple[list[dict], list[dict]]:
             "dim_label": dim_label,
             "format_id": fid,
             "has_audio": has_audio,
+            "is_direct_mp4": is_direct_mp4,
+            "direct_url": url if (is_direct_mp4 and has_audio) else None,
             "size": size,
             "score": score,
         }
@@ -274,41 +276,50 @@ def build_exact_blocks_from_info(info: dict) -> tuple[list[dict], list[dict]]:
             fid = item["format_id"]
             quality_token = f"fmt_{fid}" if item["has_audio"] else f"merge_{fid}"
 
-            video_options.append({
+            opt_dict = {
                 "id": quality_token,
                 "label": f"MP4 · {res_tag}",
                 "meta": " · ".join(meta_parts),
                 "ext": "mp4",
                 "primary": idx == 0,
                 "recommended": idx == 0,
-            })
+            }
+            if item.get("direct_url"):
+                opt_dict["direct_url"] = item["direct_url"]
+            video_options.append(opt_dict)
     elif unlabelled_candidates:
         unlabelled_candidates.sort(key=lambda x: x["score"])
         best_u = unlabelled_candidates[-1]
         size_str = format_size_mb(best_u["size"])
         meta = f"Original · {size_str}" if size_str else "Resolución original"
-        video_options.append({
+        opt_dict = {
             "id": f"fmt_{best_u['format_id']}",
             "label": "MP4 · Calidad original",
             "meta": meta,
             "ext": "mp4",
             "primary": True,
             "recommended": True,
-        })
+        }
+        if best_u.get("direct_url"):
+            opt_dict["direct_url"] = best_u["direct_url"]
+        video_options.append(opt_dict)
     else:
         w = info.get("width")
         h = info.get("height")
         dim_label = f"{w}x{h}" if (w and h) else "Resolución original"
         short_side = min(int(w), int(h)) if (w and h) else 0
         res_tag = f"{short_side}p" if short_side > 0 else "Original"
-        video_options.append({
+        opt_dict = {
             "id": "best_single",
             "label": f"MP4 · {res_tag}",
             "meta": dim_label,
             "ext": "mp4",
             "primary": True,
             "recommended": True,
-        })
+        }
+        if info.get("url") and str(info.get("ext") or "mp4").lower() == "mp4":
+            opt_dict["direct_url"] = info["url"]
+        video_options.append(opt_dict)
 
     audio_options = [
         {
@@ -622,6 +633,7 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
             "ext": "mp4",
             "primary": idx == 0,
             "recommended": idx == 0,
+            "direct_url": v["url"],
         })
 
     variant_urls["default"] = variants_by_res[sorted_res[0]]["url"]
@@ -759,6 +771,7 @@ async def extract_video_info(payload: UrlRequest):
                     "ext": "mp4",
                     "primary": True,
                     "recommended": True,
+                    "direct_url": fb_resolved["sd_url"],
                 })
             if fb_resolved.get("hd_url"):
                 is_first = len(video_options) == 0
@@ -769,6 +782,7 @@ async def extract_video_info(payload: UrlRequest):
                     "ext": "mp4",
                     "primary": is_first,
                     "recommended": is_first,
+                    "direct_url": fb_resolved["hd_url"],
                 })
             audio_options = [
                 {
@@ -823,6 +837,83 @@ def cleanup_temp_dir(path: str) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+SAFE_CDN_SUFFIXES = (
+    "twimg.com",
+    "fbcdn.net",
+    "facebook.com",
+    "cdninstagram.com",
+    "instagram.com",
+    "tiktokcdn.com",
+    "tiktokcdn-us.com",
+    "tiktokv.com",
+    "byteoversea.com",
+    "ibytedtos.com",
+    "muscdn.com",
+    "googlevideo.com",
+    "redd.it",
+    "redditmedia.com",
+    "pinimg.com",
+    "vimeocdn.com",
+    "akamaized.net",
+    "cloudfront.net",
+    "licdn.com",
+    "bsky.app",
+    "ttvnw.net",
+    "kick.com",
+)
+
+
+def is_safe_cdn_url(cdn_url: str) -> bool:
+    """Validates that a direct CDN URL belongs to a known social media CDN over HTTPS (SSRF protection)."""
+    if not cdn_url or not cdn_url.startswith("https://"):
+        return False
+    try:
+        parsed = urlparse(cdn_url)
+        host = (parsed.hostname or "").lower()
+        return any(host == s or host.endswith(f".{s}") for s in SAFE_CDN_SUFFIXES)
+    except Exception:
+        return False
+
+
+async def try_stream_cdn_url(cdn_url: str, filename: str) -> Optional[StreamingResponse]:
+    """
+    Streams a progressive MP4 directly from the origin CDN in 64 KB RAM chunks without
+    touching local disk (/tmp) or spawning ffmpeg, forwarding Content-Length for live % progress.
+    """
+    client = httpx.AsyncClient(follow_redirects=True, timeout=30.0)
+    try:
+        req = client.build_request("GET", cdn_url, headers={"User-Agent": DEFAULT_UA})
+        resp = await client.send(req, stream=True)
+        if resp.status_code != 200:
+            await resp.aclose()
+            await client.aclose()
+            return None
+
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        }
+        if resp.headers.get("content-length"):
+            headers["Content-Length"] = resp.headers["content-length"]
+
+        async def stream_chunks():
+            try:
+                async for chunk in resp.aiter_bytes(chunk_size=65536):
+                    yield chunk
+            finally:
+                await resp.aclose()
+                await client.aclose()
+
+        return StreamingResponse(
+            stream_chunks(),
+            media_type="video/mp4",
+            headers=headers,
+        )
+    except Exception:
+        await client.aclose()
+        return None
+
+
 @app.get("/robots.txt")
 async def robots_txt():
     content = "User-agent: *\nAllow: /\nSitemap: https://ddx.cl/sitemap.xml\n"
@@ -873,11 +964,19 @@ async def download_video(
     quality: str = Query("best_single"),
     author: str = Query(""),
     title: str = Query(""),
+    cdn_url: str = Query(""),
 ):
     platform = detect_platform(url) or "video"
     ffmpeg_path = get_ffmpeg_path()
     has_ffmpeg = ffmpeg_path is not None
     is_audio = quality == "audio"
+
+    # Zero-disk / Zero-CPU fast path if a verified progressive CDN URL was supplied by /api/info
+    if not is_audio and not quality.startswith("merge_") and is_safe_cdn_url(cdn_url):
+        fast_filename = build_ddx_filename(platform, quality, "mp4", author, title)
+        stream_resp = await try_stream_cdn_url(cdn_url, fast_filename)
+        if stream_resp:
+            return stream_resp
 
     # Handle Facebook direct variant streams (fbvar_sd, fbvar_hd) or resolved Facebook URLs
     target_url = url
@@ -893,21 +992,9 @@ async def download_video(
             if direct_fb_url and not is_audio:
                 q_tag = "hd" if quality == "fbvar_hd" else "sd"
                 filename = build_ddx_filename("facebook", q_tag, "mp4", author, title or fb_resolved.get("title", ""))
-                async def stream_fb_variant():
-                    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-                        async with client.stream("GET", direct_fb_url, headers={"User-Agent": DEFAULT_UA}) as resp:
-                            resp.raise_for_status()
-                            async for chunk in resp.aiter_bytes(chunk_size=65536):
-                                yield chunk
-
-                return StreamingResponse(
-                    stream_fb_variant(),
-                    media_type="video/mp4",
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{filename}"',
-                        "Cache-Control": "no-store",
-                    },
-                )
+                stream_resp = await try_stream_cdn_url(direct_fb_url, filename)
+                if stream_resp:
+                    return stream_resp
             elif direct_fb_url and is_audio and has_ffmpeg:
                 tmp_dir_fb = tempfile.mkdtemp(prefix="dl_fb_")
                 out_mp3 = os.path.join(tmp_dir_fb, "audio.mp3")
@@ -939,21 +1026,9 @@ async def download_video(
             if direct_x_url and not is_audio:
                 q_tag = f"{quality.replace('xvar_', '')}p"
                 filename = build_ddx_filename("x", q_tag, "mp4", author or x_data.get("uploader", ""), title or x_data.get("description", ""))
-                async def stream_x_variant():
-                    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-                        async with client.stream("GET", direct_x_url, headers={"User-Agent": DEFAULT_UA}) as resp:
-                            resp.raise_for_status()
-                            async for chunk in resp.aiter_bytes(chunk_size=65536):
-                                yield chunk
-
-                return StreamingResponse(
-                    stream_x_variant(),
-                    media_type="video/mp4",
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{filename}"',
-                        "Cache-Control": "no-store",
-                    },
-                )
+                stream_resp = await try_stream_cdn_url(direct_x_url, filename)
+                if stream_resp:
+                    return stream_resp
             elif direct_x_url and is_audio and has_ffmpeg:
                 tmp_dir_x = tempfile.mkdtemp(prefix="dl_x_")
                 out_mp3 = os.path.join(tmp_dir_x, "audio.mp3")

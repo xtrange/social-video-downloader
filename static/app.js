@@ -149,6 +149,39 @@
     }
   }
 
+  async function readResponseWithProgress(response, metaStr, minPct, btn, ext) {
+    const contentLengthHeader = response.headers.get('Content-Length');
+    const totalBytes = (contentLengthHeader ? parseInt(contentLengthHeader, 10) : 0) || parseEstimatedBytes(metaStr);
+    const contentType = response.headers.get('Content-Type') || (ext === 'mp3' ? 'audio/mpeg' : 'video/mp4');
+
+    if (response.body && typeof response.body.getReader === 'function') {
+      const reader = response.body.getReader();
+      const chunks = [];
+      let receivedBytes = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          receivedBytes += value.byteLength;
+          if (totalBytes > 0) {
+            const pct = Math.min(99, Math.max(minPct, Math.round((receivedBytes / totalBytes) * 100)));
+            btn.style.setProperty('--dl-progress', `${pct}%`);
+            btn.textContent = `Descargando ${pct}%`;
+          } else {
+            const mb = (receivedBytes / (1024 * 1024)).toFixed(1);
+            const pseudoPct = Math.min(95, minPct + Math.round((receivedBytes / (3 * 1024 * 1024)) * 70));
+            btn.style.setProperty('--dl-progress', `${pseudoPct}%`);
+            btn.textContent = `Descargando ${mb} MB`;
+          }
+        }
+      }
+      return new Blob(chunks, { type: contentType });
+    }
+    return await response.blob();
+  }
+
   async function triggerFileDownload(opt, data, btn) {
     const originalLabel = 'Descargar';
     const url = data.original_url;
@@ -157,6 +190,7 @@
     const platform = data.platform || 'video';
     const author = data.uploader || '';
     const title = data.description || data.title || '';
+    const cleanQualityLabel = opt.label ? opt.label.replace(/^MP[34]\s*·\s*/i, '') : quality;
 
     btn.disabled = true;
     btn.classList.remove('done');
@@ -176,68 +210,64 @@
     }, 220);
 
     try {
-      const params = new URLSearchParams({
-        url,
-        quality,
-        author: author.slice(0, 60),
-        title: title.slice(0, 80)
-      });
-      const response = await fetch(`/api/download?${params.toString()}`);
-      clearInterval(prepTimer);
+      let blob = null;
+      let filename = buildDdxFilename(platform, cleanQualityLabel, ext, author, title);
 
-      if (!response.ok) {
-        let detail = 'No se pudo descargar el archivo.';
+      // PALANCA 1: Intento de descarga 100% directa Navegador <- CDN de origen (0 consumo de tráfico/CPU/disco en ddx.cl)
+      if (opt.direct_url && quality !== 'audio') {
         try {
-          const errData = await response.json();
-          if (errData.detail) detail = errData.detail;
-        } catch (_) {}
-        throw new Error(detail);
-      }
-
-      const contentLengthHeader = response.headers.get('Content-Length');
-      const totalBytes = (contentLengthHeader ? parseInt(contentLengthHeader, 10) : 0) || parseEstimatedBytes(opt.meta);
-      const contentType = response.headers.get('Content-Type') || (ext === 'mp3' ? 'audio/mpeg' : 'video/mp4');
-
-      let blob;
-      if (response.body && typeof response.body.getReader === 'function') {
-        const reader = response.body.getReader();
-        const chunks = [];
-        let receivedBytes = 0;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (value) {
-            chunks.push(value);
-            receivedBytes += value.byteLength;
-            if (totalBytes > 0) {
-              const pct = Math.min(99, Math.max(prepPct, Math.round((receivedBytes / totalBytes) * 100)));
-              btn.style.setProperty('--dl-progress', `${pct}%`);
-              btn.textContent = `Descargando ${pct}%`;
-            } else {
-              const mb = (receivedBytes / (1024 * 1024)).toFixed(1);
-              const pseudoPct = Math.min(95, prepPct + Math.round((receivedBytes / (3 * 1024 * 1024)) * 70));
-              btn.style.setProperty('--dl-progress', `${pseudoPct}%`);
-              btn.textContent = `Descargando ${mb} MB`;
+          const directResp = await fetch(opt.direct_url, {
+            method: 'GET',
+            mode: 'cors',
+            credentials: 'omit',
+            referrerPolicy: 'no-referrer'
+          });
+          if (directResp.ok) {
+            clearInterval(prepTimer);
+            const candidateBlob = await readResponseWithProgress(directResp, opt.meta, prepPct, btn, ext);
+            if (candidateBlob && candidateBlob.size > 1024) {
+              blob = candidateBlob;
             }
           }
+        } catch (_) {
+          // Si el CDN bloquea CORS en el navegador, pasa automáticamente en milisegundos al fallback de /api/download
         }
-        blob = new Blob(chunks, { type: contentType });
-      } else {
-        blob = await response.blob();
+      }
+
+      // FALLBACK AUTOMÁTICO: Si no hubo descarga directa por CORS o requiere unión de audio/conversión MP3
+      if (!blob) {
+        const params = new URLSearchParams({
+          url,
+          quality,
+          author: author.slice(0, 60),
+          title: title.slice(0, 80),
+          cdn_url: opt.direct_url || ''
+        });
+        const response = await fetch(`/api/download?${params.toString()}`);
+        clearInterval(prepTimer);
+
+        if (!response.ok) {
+          let detail = 'No se pudo descargar el archivo.';
+          try {
+            const errData = await response.json();
+            if (errData.detail) detail = errData.detail;
+          } catch (_) {}
+          throw new Error(detail);
+        }
+
+        const disposition = response.headers.get('Content-Disposition');
+        if (disposition) {
+          const match = disposition.match(/filename="([^"]+)"/);
+          if (match && match[1]) {
+            filename = match[1];
+          }
+        }
+
+        blob = await readResponseWithProgress(response, opt.meta, prepPct, btn, ext);
       }
 
       btn.style.setProperty('--dl-progress', '100%');
       btn.textContent = 'Descargando 100%';
-
-      let filename = buildDdxFilename(platform, opt.label ? opt.label.replace(/^MP[34]\s*·\s*/i, '') : quality, ext, author, title);
-      const disposition = response.headers.get('Content-Disposition');
-      if (disposition) {
-        const match = disposition.match(/filename="([^"]+)"/);
-        if (match && match[1]) {
-          filename = match[1];
-        }
-      }
 
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
