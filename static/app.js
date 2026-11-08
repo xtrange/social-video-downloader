@@ -236,12 +236,13 @@
 
       // FALLBACK AUTOMÁTICO: Si no hubo descarga directa por CORS o requiere unión de audio/conversión MP3
       if (!blob) {
+        const fallbackCdnUrl = opt.direct_url || ((data.video_options && data.video_options[0] && data.video_options[0].direct_url) || '');
         const params = new URLSearchParams({
           url,
           quality,
           author: author.slice(0, 60),
           title: title.slice(0, 80),
-          cdn_url: opt.direct_url || ''
+          cdn_url: fallbackCdnUrl
         });
         const response = await fetch(`/api/download?${params.toString()}`);
         clearInterval(prepTimer);

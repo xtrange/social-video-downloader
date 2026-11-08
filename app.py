@@ -661,12 +661,353 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
     }
 
 
+async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
+    """
+    Fallback for public Instagram Reels/Posts using Instagram's official public embed page
+    (/p/{shortcode}/embed/captioned/) when yt-dlp's GraphQL call is rate-limited on cloud IPs.
+    """
+    m = re.search(r"instagram\.com/(?:[^/]+/)?(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)", url, re.I)
+    if not m:
+        return None
+    shortcode = m.group(1)
+    embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        try:
+            resp = await client.get(
+                embed_url,
+                headers={
+                    "User-Agent": DEFAULT_UA,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
+                },
+            )
+            html_text = resp.text or ""
+            video_url = None
+
+            v_patterns = [
+                r'"video_url"\s*:\s*"([^"]+)"',
+                r'\\"video_url\\"\s*:\s*\\"([^\\"]+)\\"',
+                r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
+            ]
+            for pat in v_patterns:
+                vm = re.search(pat, html_text)
+                if vm:
+                    candidate = _decode_fb_escaped_url(vm.group(1))
+                    if candidate.startswith("http"):
+                        video_url = candidate
+                        break
+
+            if not video_url:
+                return None
+
+            uploader = ""
+            um = re.search(r'"username"\s*:\s*"([^"]+)"', html_text) or re.search(r'\\"username\\"\s*:\s*\\"([^\\"]+)\\"', html_text)
+            if um:
+                uploader = f"@{um.group(1)}"
+
+            thumbnail = None
+            tm = (
+                re.search(r'"display_url"\s*:\s*"([^"]+)"', html_text)
+                or re.search(r'\\"display_url\\"\s*:\s*\\"([^\\"]+)\\"', html_text)
+                or re.search(r'<img[^>]+class="[^"]*EmbeddedMediaImage[^"]*"[^>]+src="([^"]+)"', html_text)
+            )
+            if tm:
+                thumbnail = _decode_fb_escaped_url(tm.group(1))
+
+            description = "Reel de Instagram"
+            cm = re.search(r'<div[^>]+class="[^"]*Caption[^"]*"[^>]*>(.*?)</div>', html_text, re.S)
+            if cm:
+                clean_cap = re.sub(r"<[^>]+>", " ", cm.group(1))
+                clean_cap = html_lib.unescape(re.sub(r"\s+", " ", clean_cap)).strip()
+                if clean_cap:
+                    description = clean_cap
+
+            video_options = [
+                {
+                    "id": "igvar_orig",
+                    "label": "MP4 · Calidad original",
+                    "meta": "Original · Alojado en Instagram",
+                    "ext": "mp4",
+                    "primary": True,
+                    "recommended": True,
+                    "direct_url": video_url,
+                }
+            ]
+            audio_options = [
+                {
+                    "id": "audio",
+                    "label": "MP3 · Solo pista de audio",
+                    "meta": "128 kbps · Extraído del video",
+                    "ext": "mp3",
+                    "primary": False,
+                    "recommended": False,
+                }
+            ]
+            return {
+                "title": description,
+                "description": description,
+                "uploader": uploader,
+                "thumbnail": thumbnail,
+                "duration": 15,
+                "video_options": video_options,
+                "audio_options": audio_options,
+            }
+        except Exception:
+            return None
+
+
+async def fetch_tiktok_fallback(url: str) -> Optional[dict]:
+    """
+    Fallback for public TikTok videos using TikTok's web rehydration state and oEmbed API.
+    """
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        try:
+            resp = await client.get(
+                url,
+                headers={
+                    "User-Agent": DEFAULT_UA,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
+                },
+            )
+            html_text = resp.text or ""
+            m = re.search(
+                r'<script[^>]+id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>',
+                html_text,
+                re.S,
+            )
+            if not m:
+                return None
+
+            import json
+            raw_json = json.loads(m.group(1))
+            default_scope = raw_json.get("__DEFAULT_SCOPE__") or {}
+            video_detail = default_scope.get("webapp.video-detail") or {}
+            item_info = (video_detail.get("itemInfo") or {}).get("itemStruct") or {}
+            video_obj = item_info.get("video") or {}
+            author_obj = item_info.get("author") or {}
+
+            description = (item_info.get("desc") or "Video de TikTok").strip()
+            uploader = f"@{author_obj['uniqueId']}" if author_obj.get("uniqueId") else ""
+            thumbnail = video_obj.get("cover") or video_obj.get("originCover")
+            duration_sec = int(video_obj.get("duration") or 15)
+
+            variants_by_res: dict[int, dict] = {}
+            for binfo in video_obj.get("bitrateInfo") or []:
+                play_addr = binfo.get("PlayAddr") or {}
+                url_list = play_addr.get("UrlList") or []
+                if not url_list:
+                    continue
+                vurl = url_list[0]
+                w = int(play_addr.get("Width") or 0)
+                h = int(play_addr.get("Height") or 0)
+                short_side = min(w, h) if (w and h) else 540
+                dim_label = f"{w}x{h}" if (w and h) else f"{short_side}p"
+                data_size = int(play_addr.get("DataSize") or 0) or None
+                bitrate = int(binfo.get("Bitrate") or 0)
+                existing = variants_by_res.get(short_side)
+                if not existing or bitrate > existing["bitrate"]:
+                    variants_by_res[short_side] = {
+                        "short_side": short_side,
+                        "dim_label": dim_label,
+                        "size": data_size,
+                        "bitrate": bitrate,
+                        "url": vurl,
+                    }
+
+            if not variants_by_res and video_obj.get("playAddr"):
+                w = int(video_obj.get("width") or 540)
+                h = int(video_obj.get("height") or 960)
+                short_side = min(w, h) if (w and h) else 540
+                variants_by_res[short_side] = {
+                    "short_side": short_side,
+                    "dim_label": f"{w}x{h}",
+                    "size": None,
+                    "bitrate": 0,
+                    "url": video_obj["playAddr"],
+                }
+
+            if not variants_by_res:
+                return None
+
+            sorted_res = sorted(variants_by_res.keys())
+            video_options = []
+            for idx, r in enumerate(sorted_res):
+                v = variants_by_res[r]
+                size_str = format_size_mb(v["size"])
+                meta = f"{v['dim_label']} · {size_str}" if size_str else v["dim_label"]
+                video_options.append({
+                    "id": f"tkvar_{r}",
+                    "label": f"MP4 · {r}p",
+                    "meta": meta,
+                    "ext": "mp4",
+                    "primary": idx == 0,
+                    "recommended": idx == 0,
+                    "direct_url": v["url"],
+                })
+
+            audio_options = [
+                {
+                    "id": "audio",
+                    "label": "MP3 · Solo pista de audio",
+                    "meta": "128 kbps · Extraído del video",
+                    "ext": "mp3",
+                    "primary": False,
+                    "recommended": False,
+                }
+            ]
+            return {
+                "title": description,
+                "description": description,
+                "uploader": uploader,
+                "thumbnail": thumbnail,
+                "duration": duration_sec,
+                "video_options": video_options,
+                "audio_options": audio_options,
+            }
+        except Exception:
+            return None
+
+
+async def fetch_reddit_json_fallback(url: str) -> Optional[dict]:
+    """
+    Fallback for public Reddit video posts using Reddit's public .json endpoint.
+    """
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        try:
+            clean_url = url.split("?")[0].rstrip("/")
+            if "redd.it/" in clean_url or "/s/" in clean_url:
+                r_init = await client.get(url, headers={"User-Agent": DEFAULT_UA})
+                clean_url = str(r_init.url).split("?")[0].rstrip("/")
+
+            json_url = f"{clean_url}.json?raw_json=1"
+            resp = await client.get(json_url, headers={"User-Agent": DEFAULT_UA})
+            if resp.status_code != 200:
+                return None
+
+            payload = resp.json()
+            if not isinstance(payload, list) or not payload:
+                return None
+
+            children = ((payload[0].get("data") or {}).get("children")) or []
+            if not children:
+                return None
+
+            post = children[0].get("data") or {}
+            media = post.get("secure_media") or post.get("media")
+            if not media and post.get("crosspost_parent_list"):
+                parent = post["crosspost_parent_list"][0]
+                media = parent.get("secure_media") or parent.get("media")
+
+            rvideo = (media or {}).get("reddit_video") or {}
+            fallback_url = rvideo.get("fallback_url")
+            if not fallback_url:
+                return None
+
+            direct_mp4 = fallback_url.split("?")[0]
+            h = int(rvideo.get("height") or 720)
+            w = int(rvideo.get("width") or 1280)
+            short_side = min(w, h) if (w and h) else 720
+            duration_sec = int(rvideo.get("duration") or 15)
+            title = (post.get("title") or "Video de Reddit").strip()
+            author = f"@{post['author']}" if post.get("author") else ""
+            thumb = post.get("thumbnail")
+            if thumb and not str(thumb).startswith("http"):
+                thumb = None
+
+            video_options = [
+                {
+                    "id": f"rdvar_{short_side}",
+                    "label": f"MP4 · {short_side}p",
+                    "meta": f"{w}x{h} · Alojado en Reddit",
+                    "ext": "mp4",
+                    "primary": True,
+                    "recommended": True,
+                    "direct_url": direct_mp4,
+                }
+            ]
+            audio_options = [
+                {
+                    "id": "audio",
+                    "label": "MP3 · Solo pista de audio",
+                    "meta": "128 kbps · Extraído del video",
+                    "ext": "mp3",
+                    "primary": False,
+                    "recommended": False,
+                }
+            ]
+            return {
+                "title": title,
+                "description": title,
+                "uploader": author,
+                "thumbnail": thumb,
+                "duration": duration_sec,
+                "video_options": video_options,
+                "audio_options": audio_options,
+            }
+        except Exception:
+            return None
+
+
 @app.get("/")
 async def index():
     return FileResponse(
         str(STATIC_DIR / "index.html"),
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
+
+
+@app.get("/api/health-platforms")
+async def health_platforms(probe: int = Query(0)):
+    """
+    Diagnostic endpoint to inspect the status of all 13 supported platforms,
+    their extractors, and (when ?probe=1 is passed) live connectivity from the server IP.
+    """
+    ffmpeg_path = get_ffmpeg_path()
+    matrix = {
+        "x": {"label": "X (Twitter)", "mode": "yt-dlp + extractor directo syndication/vxtwitter", "palanca_1_direct_cdn": True},
+        "facebook": {"label": "Facebook", "mode": "yt-dlp + extractor directo crawler/embed SD/HD", "palanca_1_direct_cdn": True},
+        "instagram": {"label": "Instagram", "mode": "yt-dlp + extractor respaldo embed público", "palanca_1_direct_cdn": True},
+        "tiktok": {"label": "TikTok", "mode": "yt-dlp + extractor respaldo rehydration JSON", "palanca_1_direct_cdn": True},
+        "reddit": {"label": "Reddit", "mode": "yt-dlp + extractor respaldo JSON público", "palanca_1_direct_cdn": True},
+        "pinterest": {"label": "Pinterest", "mode": "yt-dlp (metadatos públicos pinimg.com)", "palanca_1_direct_cdn": True},
+        "bsky": {"label": "Bluesky", "mode": "yt-dlp (API pública AT Protocol)", "palanca_1_direct_cdn": True},
+        "vimeo": {"label": "Vimeo", "mode": "yt-dlp (videos públicos)", "palanca_1_direct_cdn": True},
+        "twitch": {"label": "Twitch Clips", "mode": "yt-dlp (GraphQL público de clips)", "palanca_1_direct_cdn": True},
+        "kick": {"label": "Kick Clips", "mode": "yt-dlp", "palanca_1_direct_cdn": True},
+        "threads": {"label": "Threads", "mode": "yt-dlp (posts públicos)", "palanca_1_direct_cdn": True},
+        "linkedin": {"label": "LinkedIn", "mode": "yt-dlp (posts con visibilidad pública)", "palanca_1_direct_cdn": True},
+        "youtube": {"label": "YouTube", "mode": "yt-dlp (sujeto a verificación de cuenta en IPs cloud)", "palanca_1_direct_cdn": False},
+    }
+
+    if probe == 1:
+        probe_targets = {
+            "x": "https://cdn.syndication.twimg.com/tweet-result?id=20&token=a",
+            "facebook": "https://www.facebook.com/plugins/video.php",
+            "instagram": "https://www.instagram.com/p/C-test/embed/captioned/",
+            "tiktok": "https://www.tiktok.com/oembed?url=https://www.tiktok.com/@tiktok",
+            "reddit": "https://www.reddit.com/.json?limit=1",
+            "bsky": "https://public.api.bsky.app/xrpc/_health",
+            "vimeo": "https://vimeo.com/api/oembed.json?url=https://vimeo.com/76979871",
+        }
+        async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+            for key, purl in probe_targets.items():
+                try:
+                    r = await client.get(purl, headers={"User-Agent": DEFAULT_UA})
+                    matrix[key]["live_http_status"] = r.status_code
+                    matrix[key]["reachable_from_server"] = r.status_code < 500
+                except Exception as e:
+                    matrix[key]["live_http_status"] = str(e)[:60]
+                    matrix[key]["reachable_from_server"] = False
+
+    return {
+        "status": "ok",
+        "domain": "ddx.cl",
+        "yt_dlp_version": getattr(yt_dlp.version, "__version__", "unknown"),
+        "ffmpeg_available": ffmpeg_path is not None,
+        "platforms": matrix,
+    }
 
 
 @app.get("/api/thumbnail")
@@ -825,6 +1166,60 @@ async def extract_video_info(payload: UrlRequest):
                     "video_options": x_data["video_options"],
                     "audio_options": x_data["audio_options"],
                     "options": x_data["video_options"] + x_data["audio_options"],
+                }
+
+        # Fallback for Instagram using public embed page
+        if platform == "instagram":
+            ig_data = await fetch_instagram_embed_fallback(target_url)
+            if ig_data:
+                return {
+                    "original_url": target_url,
+                    "platform": "instagram",
+                    "source_label": source_label,
+                    "title": ig_data["description"],
+                    "description": ig_data["description"],
+                    "uploader": ig_data["uploader"],
+                    "thumbnail": ig_data["thumbnail"],
+                    "duration": ig_data["duration"],
+                    "video_options": ig_data["video_options"],
+                    "audio_options": ig_data["audio_options"],
+                    "options": ig_data["video_options"] + ig_data["audio_options"],
+                }
+
+        # Fallback for TikTok using web rehydration JSON
+        if platform == "tiktok":
+            tk_data = await fetch_tiktok_fallback(raw_url)
+            if tk_data:
+                return {
+                    "original_url": raw_url,
+                    "platform": "tiktok",
+                    "source_label": source_label,
+                    "title": tk_data["description"],
+                    "description": tk_data["description"],
+                    "uploader": tk_data["uploader"],
+                    "thumbnail": tk_data["thumbnail"],
+                    "duration": tk_data["duration"],
+                    "video_options": tk_data["video_options"],
+                    "audio_options": tk_data["audio_options"],
+                    "options": tk_data["video_options"] + tk_data["audio_options"],
+                }
+
+        # Fallback for Reddit using public .json endpoint
+        if platform == "reddit":
+            rd_data = await fetch_reddit_json_fallback(raw_url)
+            if rd_data:
+                return {
+                    "original_url": raw_url,
+                    "platform": "reddit",
+                    "source_label": source_label,
+                    "title": rd_data["description"],
+                    "description": rd_data["description"],
+                    "uploader": rd_data["uploader"],
+                    "thumbnail": rd_data["thumbnail"],
+                    "duration": rd_data["duration"],
+                    "video_options": rd_data["video_options"],
+                    "audio_options": rd_data["audio_options"],
+                    "options": rd_data["video_options"] + rd_data["audio_options"],
                 }
 
         raise HTTPException(
@@ -1004,6 +1399,29 @@ async def download_video(
         stream_resp = await try_stream_cdn_url(cdn_url, fast_filename)
         if stream_resp:
             return stream_resp
+
+    # Direct MP3 extraction fast path if audio is requested and we already have a verified CDN URL
+    if is_audio and has_ffmpeg and is_safe_cdn_url(cdn_url):
+        tmp_dir_cdn = tempfile.mkdtemp(prefix="dl_cdn_mp3_")
+        out_mp3_cdn = os.path.join(tmp_dir_cdn, "audio.mp3")
+        try:
+            subprocess.run(
+                [ffmpeg_path, "-y", "-i", cdn_url, "-vn", "-acodec", "libmp3lame", "-b:a", "128k", out_mp3_cdn],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+                check=True,
+            )
+            filename = build_ddx_filename(platform, "audio", "mp3", author, title)
+            return FileResponse(
+                path=out_mp3_cdn,
+                filename=filename,
+                media_type="audio/mpeg",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
+                background=BackgroundTask(cleanup_temp_dir, tmp_dir_cdn),
+            )
+        except Exception:
+            cleanup_temp_dir(tmp_dir_cdn)
 
     # Handle Facebook direct variant streams (fbvar_sd, fbvar_hd) or resolved Facebook URLs
     target_url = url
