@@ -8,7 +8,7 @@ import tempfile
 import unicodedata
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 import yt_dlp
@@ -335,13 +335,16 @@ def build_exact_blocks_from_info(info: dict) -> tuple[list[dict], list[dict]]:
 
 
 def _decode_fb_escaped_url(raw: str) -> str:
-    """Decodes JSON/JS escaped URLs from Facebook HTML payloads."""
+    """Decodes JSON/JS single- or multi-escaped URLs from Facebook and Instagram HTML/JSON payloads."""
     try:
-        cleaned = raw.replace("\\/", "/")
-        cleaned = cleaned.encode("utf-8").decode("unicode_escape")
+        cleaned = raw.strip().rstrip("\\")
+        for _ in range(3):
+            cleaned = re.sub(r"\\+/", "/", cleaned)
+            cleaned = re.sub(r"\\+u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), cleaned)
+            cleaned = re.sub(r"\\+x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), cleaned)
         return html_lib.unescape(cleaned)
     except Exception:
-        return raw.replace("\\/", "/")
+        return raw.replace("\\\\/", "/").replace("\\/", "/")
 
 
 def _extract_fb_video_id(url: str, html_text: str = "") -> Optional[str]:
@@ -502,18 +505,82 @@ async def resolve_and_extract_facebook(url: str) -> dict:
     return result
 
 
-async def resolve_instagram_share_url(url: str) -> str:
-    """Resolves /share/reel/... or /share/p/... Instagram links to their canonical /reel/... URL."""
-    if "/share/" not in url.lower():
-        return url
+def _extract_ig_shortcode(url: str, html_text: str = "") -> Optional[str]:
+    """
+    Extracts the canonical Instagram shortcode from /reel/, /reels/, /p/, /tv/,
+    /@user/reel/, or /accounts/login/?next=%2Freel%2F... URLs and HTML metadata.
+    """
+    candidates = [url]
     try:
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": FB_CRAWLER_UA})
-            return str(resp.url)
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        if "next" in qs and qs["next"]:
+            nxt = unquote(unquote(qs["next"][0]))
+            if nxt.startswith("/"):
+                nxt = f"https://www.instagram.com{nxt}"
+            candidates.insert(0, nxt)
+        unquoted_url = unquote(url)
+        if unquoted_url != url:
+            candidates.append(unquoted_url)
     except Exception:
-        return url
+        pass
+
+    ig_pat = re.compile(
+        r"(?:instagram\.com|^)/(?:(?!share/|accounts/|explore/|stories/)[A-Za-z0-9_.-]+/)?(?:reel|reels|p|tv)/([A-Za-z0-9_-]{5,})",
+        re.I,
+    )
+    for cand in candidates:
+        m = ig_pat.search(cand)
+        if m:
+            sc = m.group(1)
+            if sc.lower() not in ("embed", "captioned", "login", "share"):
+                return sc
+
+    if html_text:
+        for pat in (
+            r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)["\']',
+            r'\\*"shortcode\\*"\s*:\s*\\*"([A-Za-z0-9_-]{5,})\\*"',
+            r'instagram://media\?id=([A-Za-z0-9_-]+)',
+        ):
+            hm = re.search(pat, html_text, re.I)
+            if hm:
+                val = hm.group(1)
+                if "instagram.com" in val:
+                    sub = ig_pat.search(val)
+                    if sub:
+                        return sub.group(1)
+                elif len(val) >= 5 and not val.isdigit():
+                    return val
+    return None
 
 
+async def resolve_instagram_share_url(url: str) -> str:
+    """
+    Resolves /share/reel/..., /share/p/..., or /accounts/login/?next=... Instagram links
+    to their clean canonical https://www.instagram.com/reel/{shortcode}/ URL.
+    """
+    direct_sc = _extract_ig_shortcode(url)
+    if direct_sc and "/share/" not in url.lower():
+        kind = "p" if "/p/" in url.lower() else "reel"
+        return f"https://www.instagram.com/{kind}/{direct_sc}/"
+
+    for ua in (FB_CRAWLER_UA, DEFAULT_UA):
+        try:
+            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True, max_redirects=8) as client:
+                resp = await client.get(url, headers={"User-Agent": ua})
+                # Inspect all redirect hops + final URL + HTML body
+                urls_to_check = [str(r.url) for r in resp.history] + [str(resp.url)]
+                for hop_url in urls_to_check:
+                    sc = _extract_ig_shortcode(hop_url)
+                    if sc:
+                        kind = "p" if "/p/" in hop_url.lower() else "reel"
+                        return f"https://www.instagram.com/{kind}/{sc}/"
+                sc_html = _extract_ig_shortcode(str(resp.url), resp.text or "")
+                if sc_html:
+                    return f"https://www.instagram.com/reel/{sc_html}/"
+        except Exception:
+            continue
+    return url
 async def fetch_x_real_variants(url: str) -> Optional[dict]:
     """
     Queries X's syndication API and vxtwitter to obtain the exact MP4 variants
@@ -663,98 +730,280 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
 
 async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
     """
-    Fallback for public Instagram Reels/Posts using Instagram's official public embed page
-    (/p/{shortcode}/embed/captioned/) when yt-dlp's GraphQL call is rate-limited on cloud IPs.
+    Multi-layer fallback for public Instagram Reels and Posts when yt-dlp is blocked on cloud IPs:
+    1) Official public embed endpoints (/p/{shortcode}/embed/captioned/ & /reel/{shortcode}/embed/captioned/)
+       with multi-escaped contextJSON decoding.
+    2) Public Web GraphQL query (PolarisPostActionLoadPostQueryQuery) using session LSD/CSRF tokens.
+    3) OpenGraph crawler fallback for direct og:video extraction.
     """
-    m = re.search(r"instagram\.com/(?:[^/]+/)?(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)", url, re.I)
-    if not m:
+    shortcode = _extract_ig_shortcode(url)
+    if not shortcode:
+        resolved = await resolve_instagram_share_url(url)
+        shortcode = _extract_ig_shortcode(resolved)
+    if not shortcode:
         return None
-    shortcode = m.group(1)
-    embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
 
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-        try:
-            resp = await client.get(
-                embed_url,
-                headers={
-                    "User-Agent": DEFAULT_UA,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
-                },
-            )
-            html_text = resp.text or ""
-            video_url = None
+    video_url: Optional[str] = None
+    variants_by_res: dict[int, dict] = {}
+    uploader = ""
+    thumbnail: Optional[str] = None
+    description = "Reel de Instagram"
+    duration_sec = 15
+    lsd_token = "AVqbxe3J_YA"
 
-            v_patterns = [
-                r'"video_url"\s*:\s*"([^"]+)"',
-                r'\\"video_url\\"\s*:\s*\\"([^\\"]+)\\"',
-                r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
-            ]
-            for pat in v_patterns:
-                vm = re.search(pat, html_text)
-                if vm:
-                    candidate = _decode_fb_escaped_url(vm.group(1))
-                    if candidate.startswith("http"):
-                        video_url = candidate
+    v_patterns = [
+        r'\\*"video_url\\*"\s*:\s*\\*"(https?:[^"\s]+?)\\*"',
+        r'\\*"video_versions\\*"\s*:\s*\[\s*\{[^}]*?\\*"url\\*"\s*:\s*\\*"(https?:[^"\s]+?)\\*"',
+        r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
+    ]
+
+    async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+        # Layer 1: Public embed endpoints
+        for embed_path in (f"/p/{shortcode}/embed/captioned/", f"/reel/{shortcode}/embed/captioned/"):
+            if video_url:
+                break
+            try:
+                embed_url = f"https://www.instagram.com{embed_path}"
+                resp = await client.get(
+                    embed_url,
+                    headers={
+                        "User-Agent": DEFAULT_UA,
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
+                        "Referer": "https://www.instagram.com/",
+                    },
+                )
+                html_text = resp.text or ""
+                if not html_text:
+                    continue
+
+                lsd_m = re.search(r'\["LSD",\s*\[\],\s*\{"token"\s*:\s*"([^"]+)"\}', html_text)
+                if lsd_m:
+                    lsd_token = lsd_m.group(1)
+
+                for pat in v_patterns:
+                    vm = re.search(pat, html_text)
+                    if vm:
+                        candidate = _decode_fb_escaped_url(vm.group(1))
+                        if candidate.startswith("http"):
+                            video_url = candidate
+                            break
+
+                if not uploader:
+                    um = re.search(r'\\*"username\\*"\s*:\s*\\*"([^"\\]+)\\*"', html_text)
+                    if not um:
+                        um = re.search(r'class="[^"]*UsernameText[^"]*"[^>]*>([^<]+)<', html_text)
+                    if um:
+                        u_clean = um.group(1).strip().lstrip("@")
+                        if u_clean and u_clean.lower() != "instagram":
+                            uploader = f"@{u_clean}"
+
+                if not thumbnail:
+                    tm = (
+                        re.search(r'\\*"display_url\\*"\s*:\s*\\*"(https?:[^"\s]+?)\\*"', html_text)
+                        or re.search(r'\\*"thumbnail_src\\*"\s*:\s*\\*"(https?:[^"\s]+?)\\*"', html_text)
+                        or re.search(r'<img[^>]+class="[^"]*EmbeddedMediaImage[^"]*"[^>]+src="([^"]+)"', html_text)
+                    )
+                    if tm:
+                        thumbnail = _decode_fb_escaped_url(tm.group(1))
+
+                if description == "Reel de Instagram":
+                    cm = re.search(r'<div[^>]+class="[^"]*Caption[^"]*"[^>]*>(.*?)</div>', html_text, re.S)
+                    if cm:
+                        clean_cap = re.sub(r"<br\s*/?>", "\n", cm.group(1), flags=re.I)
+                        clean_cap = re.sub(r"<[^>]+>", " ", clean_cap)
+                        clean_cap = html_lib.unescape(re.sub(r"[ \t]+", " ", clean_cap)).strip()
+                        if clean_cap:
+                            description = clean_cap
+                    else:
+                        cap_json = re.search(r'\\*"edge_media_to_caption\\*"\s*:\s*\{\\*?"edges\\*"\s*:\s*\[\{\\*?"node\\*"\s*:\s*\{\\*?"text\\*"\s*:\s*\\*"([^"\\]*(?:\\.[^"\\]*)*)\\*"', html_text)
+                        if cap_json:
+                            description = _decode_fb_escaped_url(cap_json.group(1))
+
+                dur_m = re.search(r'\\*"video_duration\\*"\s*:\s*([0-9.]+)', html_text)
+                if dur_m:
+                    try:
+                        duration_sec = max(1, round(float(dur_m.group(1))))
+                    except Exception:
+                        pass
+            except Exception:
+                continue
+
+        # Layer 2: Public Web GraphQL Query (PolarisPostActionLoadPostQueryQuery)
+        if not video_url:
+            csrf_token = client.cookies.get("csrftoken") or "missing"
+            for doc_id in ("8845758582119845", "10015901848480474"):
+                if video_url or variants_by_res:
+                    break
+                try:
+                    gql_headers = {
+                        "User-Agent": DEFAULT_UA,
+                        "Accept": "*/*",
+                        "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "X-IG-App-ID": "936619743392459",
+                        "X-FB-LSD": lsd_token,
+                        "X-ASBD-ID": "129477",
+                        "X-CSRFToken": csrf_token,
+                        "Origin": "https://www.instagram.com",
+                        "Referer": f"https://www.instagram.com/reel/{shortcode}/",
+                    }
+                    gql_data = {
+                        "av": "0",
+                        "__d": "www",
+                        "__user": "0",
+                        "__a": "1",
+                        "__req": "1",
+                        "dpr": "1",
+                        "lsd": lsd_token,
+                        "fb_api_caller_class": "RelayModern",
+                        "fb_api_req_friendly_name": "PolarisPostActionLoadPostQueryQuery",
+                        "variables": json.dumps({
+                            "shortcode": shortcode,
+                            "fetch_tagged_user_count": None,
+                            "hoisted_comment_id": None,
+                            "hoisted_reply_id": None,
+                        }),
+                        "server_timestamps": "true",
+                        "doc_id": doc_id,
+                    }
+                    g_resp = await client.post("https://www.instagram.com/graphql/query", headers=gql_headers, data=gql_data)
+                    g_text = g_resp.text or ""
+                    if g_resp.status_code == 200 and g_text:
+                        try:
+                            g_json = g_resp.json()
+                            media = (g_json.get("data") or {}).get("xdt_shortcode_media") or (g_json.get("data") or {}).get("shortcode_media") or {}
+                            if media:
+                                owner = media.get("owner") or {}
+                                if owner.get("username") and not uploader:
+                                    uploader = f"@{owner['username']}"
+                                if media.get("display_url") and not thumbnail:
+                                    thumbnail = media["display_url"]
+                                if media.get("video_duration"):
+                                    duration_sec = max(1, round(float(media["video_duration"])))
+                                cap_edges = ((media.get("edge_media_to_caption") or {}).get("edges")) or []
+                                if cap_edges and (cap_edges[0].get("node") or {}).get("text"):
+                                    description = cap_edges[0]["node"]["text"].strip()
+
+                                # Check direct video_url or carousel children
+                                if media.get("video_url"):
+                                    video_url = media["video_url"]
+                                for vver in media.get("video_versions") or []:
+                                    if vver.get("url"):
+                                        w = int(vver.get("width") or 0)
+                                        h = int(vver.get("height") or 0)
+                                        short_side = min(w, h) if (w and h) else 720
+                                        if short_side not in variants_by_res:
+                                            variants_by_res[short_side] = {
+                                                "short_side": short_side,
+                                                "dim_label": f"{w}x{h}" if (w and h) else "Original",
+                                                "url": vver["url"],
+                                            }
+                                if not video_url and not variants_by_res:
+                                    sidecar = ((media.get("edge_sidecar_to_children") or {}).get("edges")) or []
+                                    for edge in sidecar:
+                                        node = edge.get("node") or {}
+                                        if node.get("video_url"):
+                                            video_url = node["video_url"]
+                                            break
+                        except Exception:
+                            pass
+
+                        if not video_url and not variants_by_res:
+                            for pat in v_patterns:
+                                vm = re.search(pat, g_text)
+                                if vm:
+                                    candidate = _decode_fb_escaped_url(vm.group(1))
+                                    if candidate.startswith("http"):
+                                        video_url = candidate
+                                        break
+                except Exception:
+                    continue
+
+        # Layer 3: Social Crawler OpenGraph fallback
+        if not video_url and not variants_by_res:
+            for bot_ua in ("TelegramBot (like TwitterBot)", FB_CRAWLER_UA):
+                try:
+                    c_resp = await client.get(
+                        f"https://www.instagram.com/reel/{shortcode}/",
+                        headers={"User-Agent": bot_ua},
+                    )
+                    c_html = c_resp.text or ""
+                    for pat in v_patterns:
+                        vm = re.search(pat, c_html)
+                        if vm:
+                            candidate = _decode_fb_escaped_url(vm.group(1))
+                            if candidate.startswith("http"):
+                                video_url = candidate
+                                break
+                    if video_url:
+                        if not thumbnail:
+                            og_img = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', c_html, re.I)
+                            if og_img:
+                                thumbnail = html_lib.unescape(og_img.group(1)).strip()
+                        if description == "Reel de Instagram":
+                            og_desc = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']', c_html, re.I)
+                            if og_desc:
+                                description = html_lib.unescape(og_desc.group(1)).strip()
                         break
+                except Exception:
+                    continue
 
-            if not video_url:
-                return None
+    if not video_url and not variants_by_res:
+        return None
 
-            uploader = ""
-            um = re.search(r'"username"\s*:\s*"([^"]+)"', html_text) or re.search(r'\\"username\\"\s*:\s*\\"([^\\"]+)\\"', html_text)
-            if um:
-                uploader = f"@{um.group(1)}"
+    video_options = []
+    variant_urls = {}
 
-            thumbnail = None
-            tm = (
-                re.search(r'"display_url"\s*:\s*"([^"]+)"', html_text)
-                or re.search(r'\\"display_url\\"\s*:\s*\\"([^\\"]+)\\"', html_text)
-                or re.search(r'<img[^>]+class="[^"]*EmbeddedMediaImage[^"]*"[^>]+src="([^"]+)"', html_text)
-            )
-            if tm:
-                thumbnail = _decode_fb_escaped_url(tm.group(1))
+    if variants_by_res:
+        sorted_res = sorted(variants_by_res.keys())
+        for idx, r in enumerate(sorted_res):
+            v = variants_by_res[r]
+            opt_id = f"igvar_{r}"
+            variant_urls[opt_id] = v["url"]
+            video_options.append({
+                "id": opt_id,
+                "label": f"MP4 · {r}p",
+                "meta": f"{v['dim_label']} · Alojado en Instagram",
+                "ext": "mp4",
+                "primary": idx == 0,
+                "recommended": idx == 0,
+                "direct_url": v["url"],
+            })
+        variant_urls["default"] = variants_by_res[sorted_res[-1]]["url"]
+    elif video_url:
+        variant_urls["igvar_orig"] = video_url
+        variant_urls["default"] = video_url
+        video_options.append({
+            "id": "igvar_orig",
+            "label": "MP4 · Calidad original",
+            "meta": "Original · Alojado en Instagram",
+            "ext": "mp4",
+            "primary": True,
+            "recommended": True,
+            "direct_url": video_url,
+        })
 
-            description = "Reel de Instagram"
-            cm = re.search(r'<div[^>]+class="[^"]*Caption[^"]*"[^>]*>(.*?)</div>', html_text, re.S)
-            if cm:
-                clean_cap = re.sub(r"<[^>]+>", " ", cm.group(1))
-                clean_cap = html_lib.unescape(re.sub(r"\s+", " ", clean_cap)).strip()
-                if clean_cap:
-                    description = clean_cap
-
-            video_options = [
-                {
-                    "id": "igvar_orig",
-                    "label": "MP4 · Calidad original",
-                    "meta": "Original · Alojado en Instagram",
-                    "ext": "mp4",
-                    "primary": True,
-                    "recommended": True,
-                    "direct_url": video_url,
-                }
-            ]
-            audio_options = [
-                {
-                    "id": "audio",
-                    "label": "MP3 · Solo pista de audio",
-                    "meta": "128 kbps · Extraído del video",
-                    "ext": "mp3",
-                    "primary": False,
-                    "recommended": False,
-                }
-            ]
-            return {
-                "title": description,
-                "description": description,
-                "uploader": uploader,
-                "thumbnail": thumbnail,
-                "duration": 15,
-                "video_options": video_options,
-                "audio_options": audio_options,
-            }
-        except Exception:
-            return None
+    audio_options = [
+        {
+            "id": "audio",
+            "label": "MP3 · Solo pista de audio",
+            "meta": "128 kbps · Extraído del video",
+            "ext": "mp3",
+            "primary": False,
+            "recommended": False,
+        }
+    ]
+    return {
+        "title": description,
+        "description": description,
+        "uploader": uploader,
+        "thumbnail": thumbnail,
+        "duration": duration_sec,
+        "video_options": video_options,
+        "audio_options": audio_options,
+        "variant_urls": variant_urls,
+    }
 
 
 async def fetch_tiktok_fallback(url: str) -> Optional[dict]:
@@ -1495,6 +1744,54 @@ async def download_video(
                     )
                 except Exception:
                     cleanup_temp_dir(tmp_dir_x)
+
+    # Handle Instagram variants and share URL resolution
+    if platform == "instagram":
+        target_url = await resolve_instagram_share_url(url)
+        if quality.startswith("igvar_") or is_audio:
+            ig_data = await fetch_instagram_embed_fallback(target_url)
+            if ig_data and ig_data.get("variant_urls"):
+                vurls = ig_data["variant_urls"]
+                direct_ig_url = vurls.get(quality) or vurls.get("default")
+                if direct_ig_url and not is_audio:
+                    q_tag = "original" if quality == "igvar_orig" else f"{quality.replace('igvar_', '')}p"
+                    filename = build_ddx_filename(
+                        "instagram",
+                        q_tag,
+                        "mp4",
+                        author or ig_data.get("uploader", ""),
+                        title or ig_data.get("description", ""),
+                    )
+                    stream_resp = await try_stream_cdn_url(direct_ig_url, filename)
+                    if stream_resp:
+                        return stream_resp
+                elif direct_ig_url and is_audio and has_ffmpeg:
+                    tmp_dir_ig = tempfile.mkdtemp(prefix="dl_ig_")
+                    out_mp3 = os.path.join(tmp_dir_ig, "audio.mp3")
+                    try:
+                        subprocess.run(
+                            [ffmpeg_path, "-y", "-i", direct_ig_url, "-vn", "-acodec", "libmp3lame", "-b:a", "128k", out_mp3],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=20,
+                            check=True,
+                        )
+                        filename = build_ddx_filename(
+                            "instagram",
+                            "audio",
+                            "mp3",
+                            author or ig_data.get("uploader", ""),
+                            title or ig_data.get("description", ""),
+                        )
+                        return FileResponse(
+                            path=out_mp3,
+                            filename=filename,
+                            media_type="audio/mpeg",
+                            headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
+                            background=BackgroundTask(cleanup_temp_dir, tmp_dir_ig),
+                        )
+                    except Exception:
+                        cleanup_temp_dir(tmp_dir_ig)
 
     tmp_dir = tempfile.mkdtemp(prefix="dl_")
     output_template = os.path.join(tmp_dir, "media.%(ext)s")
