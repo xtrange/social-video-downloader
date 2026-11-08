@@ -171,16 +171,33 @@
     sourceBadge.textContent = data.source_label || data.platform;
     videoTitle.textContent = data.title || '';
     videoDuration.textContent = formatDuration(data.duration);
-    videoOptionsList.innerHTML = '';
-    audioOptionsList.innerHTML = '';
 
-    (data.video_options || []).forEach((opt) => {
-      videoOptionsList.appendChild(createOptionRow(opt, data));
-    });
+    const videoList = data.video_options || (data.options || []).filter((o) => o.id !== 'audio');
+    const audioList = data.audio_options || (data.options || []).filter((o) => o.id === 'audio');
 
-    (data.audio_options || []).forEach((opt) => {
-      audioOptionsList.appendChild(createOptionRow(opt, data));
-    });
+    if (videoOptionsList && audioOptionsList) {
+      videoOptionsList.innerHTML = '';
+      audioOptionsList.innerHTML = '';
+      videoList.forEach((opt) => videoOptionsList.appendChild(createOptionRow(opt, data)));
+      audioList.forEach((opt) => audioOptionsList.appendChild(createOptionRow(opt, data)));
+    } else {
+      const legacyContainer = document.getElementById('options-list');
+      if (legacyContainer) {
+        legacyContainer.innerHTML = '';
+        const b1 = document.createElement('div');
+        b1.className = 'options-block';
+        b1.innerHTML = '<div class="block-title">1. Video (de menor a mayor resolución)</div><div class="options-list"></div>';
+        videoList.forEach((opt) => b1.querySelector('.options-list').appendChild(createOptionRow(opt, data)));
+
+        const b2 = document.createElement('div');
+        b2.className = 'options-block';
+        b2.innerHTML = '<div class="block-title">2. Solo audio</div><div class="options-list"></div>';
+        audioList.forEach((opt) => b2.querySelector('.options-list').appendChild(createOptionRow(opt, data)));
+
+        legacyContainer.appendChild(b1);
+        legacyContainer.appendChild(b2);
+      }
+    }
 
     resultBox.classList.remove('hidden');
   }

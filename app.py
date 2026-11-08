@@ -29,7 +29,7 @@ app = FastAPI(
         "Facebook, Instagram, TikTok, X, Pinterest, Threads, LinkedIn, Reddit, "
         "YouTube/Shorts, Twitch, Kick, Vimeo y Bluesky."
     ),
-    version="3.0.0",
+    version="3.2.0",
 )
 
 if STATIC_DIR.exists():
@@ -65,7 +65,7 @@ PLATFORM_PATTERNS = {
     "reddit": re.compile(r"(?:https?://)?(?:www\.|old\.|v\.)?(?:reddit\.com|redd\.it)/.+", re.I),
     "youtube": re.compile(r"(?:https?://)?(?:www\.|m\.)?(?:youtube\.com|youtu\.be)/.+", re.I),
     "twitch": re.compile(r"(?:https?://)?(?:www\.|clips\.|m\.)?twitch\.tv/.+", re.I),
-    "kick": re.compile(r"(?:https?://)?(?:www\.)?kick\.com/.+", re.I),
+    "kick": re.compile(r"(?:https?://)?(?:www\.|clips\.)?kick\.com/.+", re.I),
     "vimeo": re.compile(r"(?:https?://)?(?:www\.|player\.)?vimeo\.com/.+", re.I),
     "bluesky": re.compile(r"(?:https?://)?(?:www\.)?bsky\.app/.+", re.I),
 }
@@ -165,6 +165,35 @@ def format_size_mb(size_bytes: Optional[float]) -> Optional[str]:
     return f"~{mb:.1f} MB"
 
 
+def build_default_blocks(platform: str) -> tuple[list[dict], list[dict]]:
+    base_list = DEFAULT_VIDEO_OPTIONS.get(
+        platform,
+        [
+            {"id": "res_480", "label": "MP4 · Calidad ligera (480p)", "meta": "480p · Menor tamaño", "ext": "mp4"},
+            {"id": "res_720", "label": "MP4 · Calidad estándar (720p)", "meta": "720p · Balanceado", "ext": "mp4"},
+            {"id": "res_1080", "label": "MP4 · Alta definición (1080p)", "meta": "1080p · Máxima calidad", "ext": "mp4"},
+        ],
+    )
+    video_options = []
+    for idx, opt in enumerate(base_list):
+        copy_opt = dict(opt)
+        copy_opt["primary"] = idx == 0
+        copy_opt["recommended"] = idx == 0
+        video_options.append(copy_opt)
+
+    audio_options = [
+        {
+            "id": "audio",
+            "label": "MP3 · Solo pista de audio",
+            "meta": "128 kbps · Extraído del video",
+            "ext": "mp3",
+            "primary": False,
+            "recommended": False,
+        }
+    ]
+    return video_options, audio_options
+
+
 def build_two_blocks_from_info(info: dict, platform: str) -> tuple[list[dict], list[dict]]:
     """
     Builds two ordered blocks from yt-dlp info:
@@ -174,7 +203,6 @@ def build_two_blocks_from_info(info: dict, platform: str) -> tuple[list[dict], l
     formats = info.get("formats") or []
     duration = info.get("duration") or 15
 
-    # Discover real video resolutions (short side in pixels: 360, 480, 540, 720, 1080, etc.)
     res_buckets: dict[int, dict] = {}
     for f in formats:
         vcodec = f.get("vcodec")
@@ -194,7 +222,6 @@ def build_two_blocks_from_info(info: dict, platform: str) -> tuple[list[dict], l
         if short_side < 144:
             continue
 
-        # Normalize to nearest standard bucket so UI is clean
         if short_side <= 380:
             bucket = 360
         elif short_side <= 500:
@@ -214,7 +241,6 @@ def build_two_blocks_from_info(info: dict, platform: str) -> tuple[list[dict], l
             size = (float(f["tbr"]) * 1000 / 8) * float(duration)
 
         existing = res_buckets.get(bucket)
-        # Prefer progressive formats that already contain audio
         if not existing or (has_audio and not existing["has_audio"]):
             res_buckets[bucket] = {
                 "bucket": bucket,
@@ -223,49 +249,38 @@ def build_two_blocks_from_info(info: dict, platform: str) -> tuple[list[dict], l
             }
 
     sorted_buckets = sorted(res_buckets.keys())
+    if len(sorted_buckets) < 1:
+        return build_default_blocks(platform)
 
     video_options: list[dict] = []
-    if len(sorted_buckets) >= 2:
-        for idx, b in enumerate(sorted_buckets):
-            item = res_buckets[b]
-            size_str = format_size_mb(item["size"])
-            if b <= 480:
-                desc = "Calidad ligera"
-            elif b <= 540:
-                desc = "Calidad media"
-            elif b <= 720:
-                desc = "Calidad HD"
-            else:
-                desc = "Full HD"
+    for idx, b in enumerate(sorted_buckets):
+        item = res_buckets[b]
+        size_str = format_size_mb(item["size"])
+        if b <= 360:
+            desc = "Ligero para móvil"
+        elif b <= 480:
+            desc = "Calidad ligera"
+        elif b <= 540:
+            desc = "Calidad media"
+        elif b <= 720:
+            desc = "Calidad HD"
+        else:
+            desc = "Full HD"
 
-            meta_parts = [f"{b}p"]
-            if size_str:
-                meta_parts.append(size_str)
-            else:
-                meta_parts.append("Menor peso" if idx == 0 else "Alta nitidez")
+        meta_parts = [f"{b}p"]
+        if size_str:
+            meta_parts.append(size_str)
+        else:
+            meta_parts.append("Menor peso" if idx == 0 else "Alta nitidez")
 
-            video_options.append({
-                "id": f"res_{b}",
-                "label": f"MP4 · {desc} ({b}p)",
-                "meta": " · ".join(meta_parts),
-                "ext": "mp4",
-                "primary": idx == 0,
-                "recommended": idx == 0,
-            })
-    else:
-        base_list = DEFAULT_VIDEO_OPTIONS.get(
-            platform,
-            [
-                {"id": "res_480", "label": "MP4 · Calidad ligera (480p)", "meta": "480p · Menor tamaño", "ext": "mp4"},
-                {"id": "res_720", "label": "MP4 · Calidad estándar (720p)", "meta": "720p · Balanceado", "ext": "mp4"},
-                {"id": "res_1080", "label": "MP4 · Alta definición (1080p)", "meta": "1080p · Máxima calidad", "ext": "mp4"},
-            ],
-        )
-        for idx, opt in enumerate(base_list):
-            copy_opt = dict(opt)
-            copy_opt["primary"] = idx == 0
-            copy_opt["recommended"] = idx == 0
-            video_options.append(copy_opt)
+        video_options.append({
+            "id": f"res_{b}",
+            "label": f"MP4 · {desc} ({b}p)",
+            "meta": " · ".join(meta_parts),
+            "ext": "mp4",
+            "primary": idx == 0,
+            "recommended": idx == 0,
+        })
 
     audio_options = [
         {
@@ -277,13 +292,43 @@ def build_two_blocks_from_info(info: dict, platform: str) -> tuple[list[dict], l
             "recommended": False,
         }
     ]
-
     return video_options, audio_options
+
+
+async def fetch_x_vxtwitter_fallback(url: str) -> Optional[dict]:
+    """Fallback for X/Twitter posts using api.vxtwitter.com when X rate-limits datacenter IPs."""
+    m = re.search(r"(?:twitter\.com|x\.com)/([^/]+)/status/(\d+)", url, re.I)
+    if not m:
+        return None
+    user, status_id = m.group(1), m.group(2)
+    api_url = f"https://api.vxtwitter.com/{user}/status/{status_id}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(api_url, headers={"User-Agent": DEFAULT_UA})
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            media_list = data.get("media_extended") or []
+            video_media = [m for m in media_list if m.get("type") in ("video", "gif") and m.get("url")]
+            if not video_media:
+                return None
+            first = video_media[0]
+            dur_ms = first.get("duration_millis") or 15000
+            return {
+                "title": data.get("text") or f"Video de @{data.get('user_screen_name', user)} en X",
+                "duration": max(1, round(dur_ms / 1000)),
+                "direct_mp4_url": first["url"],
+            }
+    except Exception:
+        return None
 
 
 @app.get("/")
 async def index():
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    return FileResponse(
+        str(STATIC_DIR / "index.html"),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @app.post("/api/info")
@@ -325,12 +370,36 @@ async def extract_video_info(payload: UrlRequest):
                 "duration": info.get("duration") or 15,
                 "video_options": video_options,
                 "audio_options": audio_options,
+                "options": video_options + audio_options,
             }
-    except Exception as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=f"No se pudo extraer el video. Verifica que el post sea público ({str(exc)[:120]}).",
-        )
+    except Exception:
+        # If X/Twitter blocked anonymous yt-dlp extraction, try vxtwitter API or return standard options so the user always sees download links
+        if platform == "x":
+            vx_info = await fetch_x_vxtwitter_fallback(url)
+            if vx_info:
+                video_options, audio_options = build_default_blocks("x")
+                return {
+                    "original_url": url,
+                    "platform": "x",
+                    "source_label": source_label,
+                    "title": vx_info["title"],
+                    "duration": vx_info["duration"],
+                    "video_options": video_options,
+                    "audio_options": audio_options,
+                    "options": video_options + audio_options,
+                }
+
+        video_options, audio_options = build_default_blocks(platform)
+        return {
+            "original_url": url,
+            "platform": platform,
+            "source_label": source_label,
+            "title": f"Video de {source_label}",
+            "duration": 15,
+            "video_options": video_options,
+            "audio_options": audio_options,
+            "options": video_options + audio_options,
+        }
 
 
 def cleanup_temp_dir(path: str) -> None:
@@ -362,14 +431,9 @@ async def sitemap_xml():
 
 
 def build_ydl_format_selector(quality: str, has_ffmpeg: bool) -> tuple[str, bool]:
-    """
-    Returns (format_selector_string, is_audio) using yt-dlp's 'res' (short side) filter
-    so both 9:16 vertical Reels/TikToks and 16:9 horizontal videos match accurately.
-    """
     if quality == "audio":
         return "bestaudio[ext=m4a]/bestaudio/worst[vcodec!=none]/best", True
 
-    # Extract target resolution number (e.g. res_360 -> 360, res_720 -> 720)
     target_res = 720
     if quality.startswith("res_"):
         try:
@@ -383,7 +447,6 @@ def build_ydl_format_selector(quality: str, has_ffmpeg: bool) -> tuple[str, bool
     elif quality == "hd":
         target_res = 1080
 
-    # Progressive single-file MP4 at or below target_res first, then ffmpeg-muxed if available, then fallback to worst/best so it never fails
     if has_ffmpeg:
         selector = (
             f"best[vcodec!=none][acodec!=none][res<={target_res}][ext=mp4]/"
@@ -461,12 +524,54 @@ async def download_video(
                 },
                 background=BackgroundTask(cleanup_temp_dir, tmp_dir),
             )
-    except Exception as exc:
-        cleanup_temp_dir(tmp_dir)
-        raise HTTPException(
-            status_code=422,
-            detail=f"No se pudo procesar la descarga ({str(exc)[:140]}).",
-        )
+    except Exception:
+        pass
 
     cleanup_temp_dir(tmp_dir)
-    raise HTTPException(status_code=422, detail="No se pudo generar el archivo de descarga.")
+
+    # Fallback for X (Twitter) via vxtwitter direct MP4 stream
+    if platform == "x":
+        vx_info = await fetch_x_vxtwitter_fallback(url)
+        if vx_info and vx_info.get("direct_mp4_url"):
+            direct_url = vx_info["direct_mp4_url"]
+            if is_audio and has_ffmpeg:
+                tmp_dir2 = tempfile.mkdtemp(prefix="dl_x_")
+                out_mp3 = os.path.join(tmp_dir2, "audio.mp3")
+                import subprocess
+                try:
+                    subprocess.run(
+                        [ffmpeg_path, "-y", "-i", direct_url, "-vn", "-acodec", "libmp3lame", "-b:a", "128k", out_mp3],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=20,
+                        check=True,
+                    )
+                    filename = f"ddx_x_audio.mp3"
+                    return FileResponse(
+                        path=out_mp3,
+                        filename=filename,
+                        media_type="audio/mpeg",
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
+                        background=BackgroundTask(cleanup_temp_dir, tmp_dir2),
+                    )
+                except Exception:
+                    cleanup_temp_dir(tmp_dir2)
+
+            filename = f"ddx_x_{quality}.mp4"
+            async def stream_x():
+                async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                    async with client.stream("GET", direct_url, headers={"User-Agent": DEFAULT_UA}) as resp:
+                        resp.raise_for_status()
+                        async for chunk in resp.aiter_bytes(chunk_size=65536):
+                            yield chunk
+
+            return StreamingResponse(
+                stream_x(),
+                media_type="video/mp4",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Cache-Control": "no-store",
+                },
+            )
+
+    raise HTTPException(status_code=422, detail="No se pudo generar el archivo de descarga. Asegúrate de que el post sea público.")
