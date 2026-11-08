@@ -12,16 +12,49 @@
   const sourceBadge = document.getElementById('source-badge');
   const videoUploader = document.getElementById('video-uploader');
   const videoTitle = document.getElementById('video-title');
+  const toggleDescBtn = document.getElementById('toggle-desc-btn');
   const videoDuration = document.getElementById('video-duration');
   const copyDescBtn = document.getElementById('copy-desc-btn');
+  const dlThumbBtn = document.getElementById('dl-thumb-btn');
+  const thumbWrap = document.getElementById('thumb-wrap');
   const videoThumb = document.getElementById('video-thumb');
+  const videoPreviewPlayer = document.getElementById('video-preview-player');
   const thumbPlaceholder = document.getElementById('thumb-placeholder');
+  const thumbPlayOverlay = document.getElementById('thumb-play-overlay');
   const videoOptionsList = document.getElementById('video-options-list');
   const audioOptionsList = document.getElementById('audio-options-list');
 
   let isResetMode = false;
   let analyzedUrl = '';
   let currentDescription = '';
+  let currentThumbUrl = '';
+  let currentData = null;
+  let currentPreviewPrimaryUrl = '';
+  let currentPreviewFallbackUrl = '';
+  let isPlayingPreview = false;
+
+  // Mejora 4: Registrar Service Worker para PWA e integración con "Compartir -> DDX.cl" en móviles
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+    });
+  }
+
+  // Mejora 6: Limpiador automático de enlaces "sucios" (extrae solo la URL si viene acompañada de texto)
+  function extractCleanUrl(rawText) {
+    if (!rawText) return '';
+    const trimmed = String(rawText).trim();
+    const httpMatch = trimmed.match(/https?:\/\/[^\s"'<>]+/i);
+    if (httpMatch) {
+      return httpMatch[0].replace(/[),.;!?]+$/, '');
+    }
+    const domainMatch = trimmed.match(/(?:www\.|vm\.|vt\.|m\.)?(?:instagram\.com|instagr\.am|tiktok\.com|facebook\.com|fb\.watch|x\.com|twitter\.com|youtube\.com|youtu\.be|reddit\.com|redd\.it|pinterest\.[a-z.]+|pin\.it|threads\.net|threads\.com|linkedin\.com|lnkd\.in|vimeo\.com|twitch\.tv|kick\.com|bsky\.app)\/[^\s"'<>]+/i);
+    if (domainMatch) {
+      const cleaned = domainMatch[0].replace(/[),.;!?]+$/, '');
+      return /^https?:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`;
+    }
+    return trimmed;
+  }
 
   function slugifyText(text, maxLen) {
     if (!text) return '';
@@ -43,7 +76,7 @@
     if (titleSlug && titleSlug !== authorSlug) parts.push(titleSlug);
 
     const qClean = String(quality || '')
-      .replace(/^(xvar_|fbvar_|fmt_|merge_|res_)/, '');
+      .replace(/^(xvar_|fbvar_|igvar_|tkvar_|rdvar_|fmt_|merge_|res_)/, '');
     const qSlug = slugifyText(qClean, 10);
     if (qSlug) parts.push(qSlug);
 
@@ -62,6 +95,19 @@
       return Math.round(parseFloat(kbMatch[1]) * 1024);
     }
     return 0;
+  }
+
+  function stopPreviewPlayer() {
+    isPlayingPreview = false;
+    if (thumbWrap) thumbWrap.classList.remove('playing');
+    if (videoPreviewPlayer) {
+      try {
+        videoPreviewPlayer.pause();
+      } catch (_) {}
+      videoPreviewPlayer.removeAttribute('src');
+      videoPreviewPlayer.classList.add('hidden');
+    }
+    if (videoDuration) videoDuration.classList.remove('hidden');
   }
 
   function setButtonMode(mode) {
@@ -84,9 +130,14 @@
   }
 
   function resetAll() {
+    stopPreviewPlayer();
     urlInput.value = '';
     analyzedUrl = '';
     currentDescription = '';
+    currentThumbUrl = '';
+    currentData = null;
+    currentPreviewPrimaryUrl = '';
+    currentPreviewFallbackUrl = '';
     clearBtn.classList.add('hidden');
     pasteBtn.classList.remove('hidden');
     resultBox.classList.add('hidden');
@@ -114,8 +165,14 @@
   }
 
   async function processUrl(rawUrl) {
-    const url = (rawUrl || '').trim();
+    const url = extractCleanUrl(rawUrl);
+    if (url && urlInput.value.trim() !== url) {
+      urlInput.value = url;
+      clearBtn.classList.remove('hidden');
+      pasteBtn.classList.add('hidden');
+    }
     hideMessage();
+    stopPreviewPlayer();
 
     if (!url) {
       resultBox.classList.add('hidden');
@@ -182,7 +239,7 @@
     return await response.blob();
   }
 
-  async function triggerFileDownload(opt, data, btn) {
+  async function triggerFileDownload(opt, data, btn, shareBtn) {
     const originalLabel = 'Descargar';
     const url = data.original_url;
     const quality = opt.id;
@@ -213,7 +270,7 @@
       let blob = null;
       let filename = buildDdxFilename(platform, cleanQualityLabel, ext, author, title);
 
-      // PALANCA 1: Intento de descarga 100% directa Navegador <- CDN de origen (0 consumo de tráfico/CPU/disco en ddx.cl)
+      // PALANCA 1: Intento de descarga 100% directa Navegador <- CDN de origen (0 consumo en Vercel)
       if (opt.direct_url && quality !== 'audio') {
         try {
           const directResp = await fetch(opt.direct_url, {
@@ -229,9 +286,7 @@
               blob = candidateBlob;
             }
           }
-        } catch (_) {
-          // Si el CDN bloquea CORS en el navegador, pasa automáticamente en milisegundos al fallback de /api/download
-        }
+        } catch (_) {}
       }
 
       // FALLBACK AUTOMÁTICO: Si no hubo descarga directa por CORS o requiere unión de audio/conversión MP3
@@ -277,7 +332,27 @@
       document.body.appendChild(a);
       a.click();
       a.remove();
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+
+      // Mejora 5: Habilitar botón nativo "Compartir" en móviles (Web Share API) con el archivo descargado
+      if (shareBtn && typeof navigator.share === 'function') {
+        try {
+          const mimeType = ext === 'mp3' ? 'audio/mpeg' : 'video/mp4';
+          const fileObj = new File([blob], filename, { type: mimeType });
+          if (!navigator.canShare || navigator.canShare({ files: [fileObj] })) {
+            shareBtn.classList.remove('hidden');
+            shareBtn.onclick = async () => {
+              try {
+                await navigator.share({
+                  files: [fileObj],
+                  title: filename,
+                  text: 'Descargado en ddx.cl'
+                });
+              } catch (_) {}
+            };
+          }
+        } catch (_) {}
+      }
 
       btn.classList.remove('downloading');
       btn.classList.add('done');
@@ -313,58 +388,111 @@
       <div class="option-meta">${opt.meta}</div>
     `;
 
+    const actionsWrap = document.createElement('div');
+    actionsWrap.className = 'option-actions';
+
+    const shareBtn = document.createElement('button');
+    shareBtn.type = 'button';
+    shareBtn.className = 'share-file-btn hidden';
+    shareBtn.title = 'Compartir archivo en WhatsApp, Telegram o AirDrop';
+    shareBtn.textContent = 'Compartir';
+
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = `dl-btn ${opt.primary ? 'primary' : ''}`;
     btn.textContent = 'Descargar';
 
     btn.addEventListener('click', () => {
-      triggerFileDownload(opt, data, btn);
+      triggerFileDownload(opt, data, btn, shareBtn);
     });
 
+    actionsWrap.appendChild(shareBtn);
+    actionsWrap.appendChild(btn);
+
     row.appendChild(left);
-    row.appendChild(btn);
+    row.appendChild(actionsWrap);
     return row;
   }
 
-  function updateThumbnail(thumbUrl) {
+  function updateThumbnail(thumbUrl, hasPreviewVideo) {
+    currentThumbUrl = thumbUrl || '';
+    if (dlThumbBtn) {
+      dlThumbBtn.textContent = 'Portada';
+      dlThumbBtn.classList.remove('copied');
+      dlThumbBtn.classList.toggle('hidden', !currentThumbUrl);
+    }
+
     if (!videoThumb || !thumbPlaceholder) return;
     if (thumbUrl) {
       const proxied = `/api/thumbnail?url=${encodeURIComponent(thumbUrl)}`;
       videoThumb.onload = () => {
-        videoThumb.classList.remove('hidden');
-        thumbPlaceholder.classList.add('hidden');
+        if (!isPlayingPreview) {
+          videoThumb.classList.remove('hidden');
+          thumbPlaceholder.classList.add('hidden');
+          if (thumbPlayOverlay && hasPreviewVideo) {
+            thumbPlayOverlay.classList.remove('hidden');
+          }
+        }
       };
       videoThumb.onerror = () => {
         videoThumb.classList.add('hidden');
         thumbPlaceholder.classList.remove('hidden');
+        if (thumbPlayOverlay) thumbPlayOverlay.classList.add('hidden');
       };
       videoThumb.src = proxied;
     } else {
       videoThumb.src = '';
       videoThumb.classList.add('hidden');
       thumbPlaceholder.classList.remove('hidden');
+      if (thumbPlayOverlay) thumbPlayOverlay.classList.add('hidden');
     }
   }
 
   function renderOptions(data) {
+    stopPreviewPlayer();
+    currentData = data;
     sourceBadge.textContent = data.source_label || data.platform;
     if (videoUploader) {
       videoUploader.textContent = data.uploader || '';
     }
     currentDescription = data.description || data.title || '';
     videoTitle.textContent = currentDescription;
+    videoTitle.classList.remove('expanded');
+
+    // Mejora 2: Mostrar botón "Ver más" si la descripción es extensa
+    if (toggleDescBtn) {
+      const isLong = currentDescription.length > 165 || currentDescription.split('\n').length > 4;
+      toggleDescBtn.textContent = 'Ver más';
+      toggleDescBtn.classList.toggle('hidden', !isLong);
+    }
+
     videoDuration.textContent = formatDuration(data.duration);
-    updateThumbnail(data.thumbnail);
+
+    const videoList = data.video_options || (data.options || []).filter((o) => o.id !== 'audio');
+    const audioList = data.audio_options || (data.options || []).filter((o) => o.id === 'audio');
+
+    // Mejora 1: Configurar URLs para el mini-player al hacer clic en el screenshot
+    const firstOpt = videoList[0];
+    if (firstOpt) {
+      const fallbackParams = new URLSearchParams({
+        url: data.original_url,
+        quality: firstOpt.id,
+        cdn_url: firstOpt.direct_url || ''
+      });
+      currentPreviewFallbackUrl = `/api/download?${fallbackParams.toString()}`;
+      currentPreviewPrimaryUrl = firstOpt.direct_url || currentPreviewFallbackUrl;
+    } else {
+      currentPreviewPrimaryUrl = '';
+      currentPreviewFallbackUrl = '';
+    }
+
+    updateThumbnail(data.thumbnail, !!currentPreviewPrimaryUrl);
 
     if (copyDescBtn) {
       copyDescBtn.textContent = 'Copiar texto';
       copyDescBtn.classList.remove('copied');
       copyDescBtn.classList.toggle('hidden', !currentDescription);
     }
-
-    const videoList = data.video_options || (data.options || []).filter((o) => o.id !== 'audio');
-    const audioList = data.audio_options || (data.options || []).filter((o) => o.id === 'audio');
 
     if (videoOptionsList && audioOptionsList) {
       videoOptionsList.innerHTML = '';
@@ -376,6 +504,89 @@
     resultBox.classList.remove('hidden');
   }
 
+  // Mejora 1: Iniciar mini-player in-place al hacer clic sobre el screenshot
+  if (thumbWrap && videoPreviewPlayer) {
+    thumbWrap.addEventListener('click', () => {
+      if (isPlayingPreview || !currentPreviewPrimaryUrl) return;
+      isPlayingPreview = true;
+      thumbWrap.classList.add('playing');
+      videoThumb.classList.add('hidden');
+      thumbPlaceholder.classList.add('hidden');
+      if (thumbPlayOverlay) thumbPlayOverlay.classList.add('hidden');
+      if (videoDuration) videoDuration.classList.add('hidden');
+
+      videoPreviewPlayer.classList.remove('hidden');
+      let triedFallback = false;
+      videoPreviewPlayer.onerror = () => {
+        if (!triedFallback && currentPreviewFallbackUrl && videoPreviewPlayer.src !== currentPreviewFallbackUrl) {
+          triedFallback = true;
+          videoPreviewPlayer.src = currentPreviewFallbackUrl;
+          videoPreviewPlayer.play().catch(() => {});
+        }
+      };
+      videoPreviewPlayer.src = currentPreviewPrimaryUrl;
+      videoPreviewPlayer.play().catch(() => {});
+    });
+  }
+
+  // Mejora 2: Expandir / Contraer descripción completa
+  function toggleDescriptionExpand() {
+    if (!videoTitle) return;
+    const isExpanded = videoTitle.classList.toggle('expanded');
+    if (toggleDescBtn) {
+      toggleDescBtn.textContent = isExpanded ? 'Ver menos' : 'Ver más';
+    }
+  }
+
+  if (toggleDescBtn) {
+    toggleDescBtn.addEventListener('click', toggleDescriptionExpand);
+  }
+  if (videoTitle) {
+    videoTitle.addEventListener('click', () => {
+      if (toggleDescBtn && !toggleDescBtn.classList.contains('hidden')) {
+        toggleDescriptionExpand();
+      }
+    });
+  }
+
+  // Mejora 3: Descargar imagen de portada / miniatura en alta resolución
+  if (dlThumbBtn) {
+    dlThumbBtn.addEventListener('click', async () => {
+      if (!currentThumbUrl || !currentData) return;
+      const prevText = dlThumbBtn.textContent;
+      dlThumbBtn.textContent = 'Bajando...';
+      try {
+        const res = await fetch(`/api/thumbnail?url=${encodeURIComponent(currentThumbUrl)}`);
+        if (!res.ok) throw new Error('Error');
+        const blob = await res.blob();
+        const filename = buildDdxFilename(
+          currentData.platform || 'video',
+          'portada',
+          'jpg',
+          currentData.uploader || '',
+          currentDescription
+        );
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+        dlThumbBtn.textContent = '✓ Portada';
+        dlThumbBtn.classList.add('copied');
+        setTimeout(() => {
+          dlThumbBtn.textContent = 'Portada';
+          dlThumbBtn.classList.remove('copied');
+        }, 1800);
+      } catch (_) {
+        dlThumbBtn.textContent = prevText;
+      }
+    });
+  }
+
+  // Mejora 5 anterior: Copiar descripción del post
   if (copyDescBtn) {
     copyDescBtn.addEventListener('click', async () => {
       if (!currentDescription) return;
@@ -391,18 +602,21 @@
     });
   }
 
+  // Mejora 3 anterior + Mejora 4 PWA Share Target: Detectar URL en barra de direcciones o compartida desde móvil
   function checkUrlPrefixOnLoad() {
     try {
       const searchParams = new URLSearchParams(window.location.search);
-      const queryUrl = searchParams.get('url');
-      if (queryUrl && queryUrl.trim()) {
-        const cleanQueryUrl = queryUrl.trim();
-        urlInput.value = cleanQueryUrl;
-        clearBtn.classList.remove('hidden');
-        pasteBtn.classList.add('hidden');
-        window.history.replaceState(null, '', '/');
-        processUrl(cleanQueryUrl);
-        return;
+      const sharedCandidate = searchParams.get('url') || searchParams.get('text') || searchParams.get('title');
+      if (sharedCandidate && sharedCandidate.trim()) {
+        const cleanQueryUrl = extractCleanUrl(sharedCandidate);
+        if (cleanQueryUrl && /^https?:\/\//i.test(cleanQueryUrl)) {
+          urlInput.value = cleanQueryUrl;
+          clearBtn.classList.remove('hidden');
+          pasteBtn.classList.add('hidden');
+          window.history.replaceState(null, '', '/');
+          processUrl(cleanQueryUrl);
+          return;
+        }
       }
 
       const rawPath = window.location.pathname || '';
@@ -412,20 +626,19 @@
           candidate = decodeURIComponent(candidate);
         } catch (_) {}
 
-        // Fix browser-collapsed single slash after scheme: https:/example.com -> https://example.com
         candidate = candidate.replace(/^(https?):\/([^/])/i, '$1://$2');
 
-        // If user wrote ddx.cl/www.instagram.com/... or ddx.cl/instagram.com/... without scheme
         if (!/^https?:\/\//i.test(candidate) && /^[a-z0-9.-]+\.[a-z]{2,}\//i.test(candidate)) {
           candidate = `https://${candidate}`;
         }
 
-        if (/^https?:\/\//i.test(candidate)) {
-          urlInput.value = candidate;
+        const cleanedPrefixUrl = extractCleanUrl(candidate);
+        if (/^https?:\/\//i.test(cleanedPrefixUrl)) {
+          urlInput.value = cleanedPrefixUrl;
           clearBtn.classList.remove('hidden');
           pasteBtn.classList.add('hidden');
           window.history.replaceState(null, '', '/');
-          processUrl(candidate);
+          processUrl(cleanedPrefixUrl);
         }
       }
     } catch (_) {}
@@ -446,10 +659,11 @@
 
   urlInput.addEventListener('paste', () => {
     setTimeout(() => {
-      const val = urlInput.value.trim();
-      clearBtn.classList.toggle('hidden', !val);
-      pasteBtn.classList.toggle('hidden', !!val);
-      if (val) processUrl(val);
+      const cleanVal = extractCleanUrl(urlInput.value);
+      urlInput.value = cleanVal;
+      clearBtn.classList.toggle('hidden', !cleanVal);
+      pasteBtn.classList.toggle('hidden', !!cleanVal);
+      if (cleanVal) processUrl(cleanVal);
     }, 30);
   });
 
@@ -457,9 +671,10 @@
     try {
       const text = await navigator.clipboard.readText();
       if (text && text.trim()) {
-        urlInput.value = text.trim();
+        const cleanVal = extractCleanUrl(text);
+        urlInput.value = cleanVal;
         urlInput.dispatchEvent(new Event('input'));
-        processUrl(urlInput.value);
+        processUrl(cleanVal);
       } else {
         urlInput.focus();
       }

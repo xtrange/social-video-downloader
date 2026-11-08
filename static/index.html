@@ -11,10 +11,14 @@
   <meta property="og:url" content="https://ddx.cl/" />
   <meta property="og:type" content="website" />
   <meta property="og:locale" content="es_CL" />
+  <link rel="manifest" href="/static/manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg" />
+  <link rel="apple-touch-icon" href="/static/icon.svg" />
+  <meta name="theme-color" content="#0f172a" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/index.css?v=3.9" />
+  <link rel="stylesheet" href="/static/index.css?v=4.0" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -72,14 +76,22 @@
       </div>
 
       <div id="result-box" class="result hidden" aria-live="polite">
-        <!-- Resumen del video con screenshot ampliado, badge de duración y descripción destacada -->
+        <!-- Resumen del video con screenshot interactivo (mini-player), descarga de portada y descripción expandible -->
         <div class="media-summary">
-          <div class="thumb-wrap" id="thumb-wrap">
+          <div class="thumb-wrap" id="thumb-wrap" title="Haz clic para reproducir vista previa">
             <img id="video-thumb" class="video-thumb hidden" alt="Vista previa del video" referrerpolicy="no-referrer" />
+            <video id="video-preview-player" class="video-preview-player hidden" controls playsinline preload="metadata"></video>
             <div id="thumb-placeholder" class="thumb-placeholder" aria-hidden="true">
               <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
               </svg>
+            </div>
+            <div id="thumb-play-overlay" class="thumb-play-overlay hidden" aria-hidden="true">
+              <span class="play-circle">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="6 4 20 12 6 20 6 4"></polygon>
+                </svg>
+              </span>
             </div>
             <span id="video-duration" class="video-duration"></span>
           </div>
@@ -91,10 +103,12 @@
                 <span id="video-uploader" class="video-uploader"></span>
               </div>
               <div class="result-actions-right">
+                <button type="button" id="dl-thumb-btn" class="copy-desc-btn hidden" title="Descargar imagen de portada">Portada</button>
                 <button type="button" id="copy-desc-btn" class="copy-desc-btn hidden" title="Copiar descripción del video">Copiar texto</button>
               </div>
             </div>
             <p id="video-title" class="video-description"></p>
+            <button type="button" id="toggle-desc-btn" class="toggle-desc-btn hidden">Ver más</button>
           </div>
         </div>
 
@@ -113,6 +127,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=3.9"></script>
+  <script src="/static/app.js?v=4.0"></script>
 </body>
 </html>
