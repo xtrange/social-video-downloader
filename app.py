@@ -829,8 +829,35 @@ async def extract_video_info(payload: UrlRequest):
 
         raise HTTPException(
             status_code=422,
-            detail=f"No se pudo leer el video desde el servidor de origen. Verifica que el post sea público ({str(exc)[:120]}).",
+            detail=format_friendly_extraction_error(platform, source_label, exc),
         )
+
+
+def format_friendly_extraction_error(platform: str, source_label: str, exc: Exception) -> str:
+    """Translates raw yt-dlp exceptions into clear, user-friendly Spanish messages."""
+    err_lower = str(exc).lower()
+
+    if any(k in err_lower for k in ("not a bot", "sign in", "login required", "cookies", "confirm your age")):
+        if platform == "youtube":
+            return (
+                "YouTube requiere verificación de cuenta o inicio de sesión para este video y "
+                "no permite su descarga desde servidores en la nube."
+            )
+        return (
+            f"{source_label} requiere iniciar sesión para acceder a esta publicación. "
+            "Solo es posible descargar videos de publicaciones públicas sin restricción de cuenta."
+        )
+
+    if "private" in err_lower:
+        return f"Este video de {source_label} es privado o solo está visible para usuarios autorizados."
+
+    if any(k in err_lower for k in ("country", "geo", "not available in your")):
+        return f"Este video de {source_label} tiene restricción geográfica y no permite el acceso desde el servidor."
+
+    if any(k in err_lower for k in ("404", "not found", "does not exist", "unavailable", "removed")):
+        return f"No se encontró el video en {source_label}. Verifica que el enlace sea correcto y que el post siga disponible."
+
+    return f"No se pudo leer el video desde {source_label}. Verifica que la publicación sea pública y contenga un video."
 
 
 def cleanup_temp_dir(path: str) -> None:
@@ -1110,9 +1137,10 @@ async def download_video(
             )
     except Exception as exc:
         cleanup_temp_dir(tmp_dir)
+        source_label = PLATFORM_LABELS.get(platform, platform.capitalize())
         raise HTTPException(
             status_code=422,
-            detail=f"No se pudo descargar el archivo desde el servidor de origen ({str(exc)[:120]}).",
+            detail=format_friendly_extraction_error(platform, source_label, exc),
         )
 
     cleanup_temp_dir(tmp_dir)
