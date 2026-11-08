@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/index.css?v=3.6" />
+  <link rel="stylesheet" href="/static/index.css?v=3.9" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -24,7 +24,7 @@
     "url": "https://ddx.cl/",
     "applicationCategory": "MultimediaApplication",
     "operatingSystem": "All",
-    "inLanguage": "es_CL",
+    "inLanguage": "es-CL",
     "description": "Herramienta web gratuita en Chile para bajar videos y Reels de Instagram, TikTok sin marca de agua, Facebook, X, Pinterest, Threads, LinkedIn y Reddit con solo pegar el enlace.",
     "offers": {
       "@type": "Offer",
@@ -72,15 +72,16 @@
       </div>
 
       <div id="result-box" class="result hidden" aria-live="polite">
-        <!-- Resumen del video con screenshot pequeño, descripción extendida y botón Copiar texto -->
+        <!-- Resumen del video con screenshot ampliado, badge de duración y descripción destacada -->
         <div class="media-summary">
           <div class="thumb-wrap" id="thumb-wrap">
             <img id="video-thumb" class="video-thumb hidden" alt="Vista previa del video" referrerpolicy="no-referrer" />
             <div id="thumb-placeholder" class="thumb-placeholder" aria-hidden="true">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
               </svg>
             </div>
+            <span id="video-duration" class="video-duration"></span>
           </div>
 
           <div class="media-info">
@@ -91,7 +92,6 @@
               </div>
               <div class="result-actions-right">
                 <button type="button" id="copy-desc-btn" class="copy-desc-btn hidden" title="Copiar descripción del video">Copiar texto</button>
-                <span id="video-duration" class="video-duration"></span>
               </div>
             </div>
             <p id="video-title" class="video-description"></p>
@@ -113,6 +113,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=3.8"></script>
+  <script src="/static/app.js?v=3.9"></script>
 </body>
 </html>
