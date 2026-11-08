@@ -728,12 +728,28 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
     }
 
 
+_IG_ENCODING_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+
+def _ig_shortcode_to_media_id(shortcode: str) -> str:
+    """Converts an Instagram base64url shortcode to its numeric media_id (pk) string."""
+    sc = shortcode[:-28] if len(shortcode) > 28 else shortcode
+    val = 0
+    for ch in sc:
+        idx = _IG_ENCODING_CHARS.find(ch)
+        if idx != -1:
+            val = val * 64 + idx
+    return str(val)
+
+
 async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
     """
-    Multi-layer fallback for public Instagram Reels and Posts when yt-dlp is blocked on cloud IPs:
-    1) Official public embed endpoints (/p/{shortcode}/embed/captioned/ & /reel/{shortcode}/embed/captioned/)
+    Multi-layer fallback for public Instagram Reels and Posts on cloud IPs:
+    1) Public embed endpoints (/p/{shortcode}/embed/captioned/ & /reel/{shortcode}/embed/captioned/)
        with multi-escaped contextJSON decoding.
-    2) Public Web GraphQL query (PolarisPostActionLoadPostQueryQuery) using session LSD/CSRF tokens.
+    2) 2026 Instagram Logged-Out GraphQL handshake (/api/v1/web/get_ruling_for_content/ ->
+       PolarisLoggedOutDesktopWWWPostRootContentQuery doc_id=27130156389949648 &
+       PolarisPostRootQuery doc_id=27128499623469141) with v1 product schema parsing.
     3) OpenGraph crawler fallback for direct og:video extraction.
     """
     shortcode = _extract_ig_shortcode(url)
@@ -743,6 +759,7 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
     if not shortcode:
         return None
 
+    media_id = _ig_shortcode_to_media_id(shortcode)
     video_url: Optional[str] = None
     variants_by_res: dict[int, dict] = {}
     uploader = ""
@@ -757,10 +774,69 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
         r'<meta[^>]+property=["\']og:video(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
     ]
 
+    def _consume_v1_or_gql_media(media_obj: dict) -> None:
+        nonlocal video_url, uploader, thumbnail, description, duration_sec
+        if not isinstance(media_obj, dict) or not media_obj:
+            return
+        # Author (v1 'user' or GraphQL 'owner')
+        usr = media_obj.get("user") or media_obj.get("owner") or {}
+        if isinstance(usr, dict) and usr.get("username") and not uploader:
+            uploader = f"@{usr['username']}"
+        # Caption (v1 'caption.text' or GraphQL 'edge_media_to_caption')
+        cap_obj = media_obj.get("caption")
+        if isinstance(cap_obj, dict) and cap_obj.get("text"):
+            description = str(cap_obj["text"]).strip()
+        else:
+            cap_edges = ((media_obj.get("edge_media_to_caption") or {}).get("edges")) or []
+            if cap_edges and isinstance(cap_edges[0], dict):
+                txt = (cap_edges[0].get("node") or {}).get("text")
+                if txt:
+                    description = str(txt).strip()
+        # Thumbnail (v1 'image_versions2.candidates' or GraphQL 'display_url')
+        if not thumbnail:
+            cands = ((media_obj.get("image_versions2") or {}).get("candidates")) or []
+            if cands and isinstance(cands[0], dict) and cands[0].get("url"):
+                thumbnail = cands[0]["url"]
+            elif media_obj.get("display_url"):
+                thumbnail = media_obj["display_url"]
+        # Duration
+        if media_obj.get("video_duration"):
+            try:
+                duration_sec = max(1, round(float(media_obj["video_duration"])))
+            except Exception:
+                pass
+        # Video versions / direct URL / carousel items
+        items_to_scan = [media_obj]
+        if isinstance(media_obj.get("carousel_media"), list):
+            items_to_scan.extend(media_obj["carousel_media"])
+        sidecar_edges = ((media_obj.get("edge_sidecar_to_children") or {}).get("edges")) or []
+        for edge in sidecar_edges:
+            if isinstance(edge, dict) and isinstance(edge.get("node"), dict):
+                items_to_scan.append(edge["node"])
+
+        for item in items_to_scan:
+            if not isinstance(item, dict):
+                continue
+            if item.get("video_url") and not video_url:
+                video_url = item["video_url"]
+            for vver in item.get("video_versions") or []:
+                if isinstance(vver, dict) and vver.get("url"):
+                    w = int(vver.get("width") or 0)
+                    h = int(vver.get("height") or 0)
+                    short_side = min(w, h) if (w and h) else 720
+                    if short_side not in variants_by_res:
+                        variants_by_res[short_side] = {
+                            "short_side": short_side,
+                            "dim_label": f"{w}x{h}" if (w and h) else "Original",
+                            "url": vver["url"],
+                        }
+            if video_url or variants_by_res:
+                break
+
     async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
-        # Layer 1: Public embed endpoints
+        # Layer 1: Public embed endpoints (/p/{shortcode}/embed/captioned/ & /reel/{shortcode}/embed/captioned/)
         for embed_path in (f"/p/{shortcode}/embed/captioned/", f"/reel/{shortcode}/embed/captioned/"):
-            if video_url:
+            if video_url or variants_by_res:
                 break
             try:
                 embed_url = f"https://www.instagram.com{embed_path}"
@@ -777,7 +853,10 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
                 if not html_text:
                     continue
 
-                lsd_m = re.search(r'\["LSD",\s*\[\],\s*\{"token"\s*:\s*"([^"]+)"\}', html_text)
+                lsd_m = (
+                    re.search(r'\["LSD",\s*\[\],\s*\{"token"\s*:\s*"([^"]+)"\}', html_text)
+                    or re.search(r'"l"\s*:\s*"([A-Za-z0-9_-]{8,})"', html_text)
+                )
                 if lsd_m:
                     lsd_token = lsd_m.group(1)
 
@@ -829,83 +908,104 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
             except Exception:
                 continue
 
-        # Layer 2: Public Web GraphQL Query (PolarisPostActionLoadPostQueryQuery)
-        if not video_url:
-            csrf_token = client.cookies.get("csrftoken") or "missing"
-            for doc_id in ("8845758582119845", "10015901848480474"):
-                if video_url or variants_by_res:
-                    break
-                try:
-                    gql_headers = {
-                        "User-Agent": DEFAULT_UA,
-                        "Accept": "*/*",
-                        "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "X-IG-App-ID": "936619743392459",
-                        "X-FB-LSD": lsd_token,
-                        "X-ASBD-ID": "129477",
-                        "X-CSRFToken": csrf_token,
-                        "Origin": "https://www.instagram.com",
-                        "Referer": f"https://www.instagram.com/reel/{shortcode}/",
-                    }
-                    gql_data = {
-                        "av": "0",
-                        "__d": "www",
-                        "__user": "0",
-                        "__a": "1",
-                        "__req": "1",
-                        "dpr": "1",
-                        "lsd": lsd_token,
-                        "fb_api_caller_class": "RelayModern",
-                        "fb_api_req_friendly_name": "PolarisPostActionLoadPostQueryQuery",
-                        "variables": json.dumps({
+        # Layer 2: 2026 Instagram Logged-Out GraphQL Handshake
+        if not video_url and not variants_by_res:
+            api_base_headers = {
+                "User-Agent": DEFAULT_UA,
+                "X-IG-App-ID": "936619743392459",
+                "X-ASBD-ID": "359341",
+                "X-IG-WWW-Claim": "0",
+                "Origin": "https://www.instagram.com",
+                "Accept": "*/*",
+                "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
+            }
+            # Step 2a: Call get_ruling_for_content to grant csrftoken cookie (matching yt-dlp 2026.10.26)
+            try:
+                await client.get(
+                    "https://www.instagram.com/api/v1/web/get_ruling_for_content/",
+                    params={"content_type": "MEDIA", "target_id": media_id},
+                    headers=api_base_headers,
+                )
+            except Exception:
+                pass
+
+            csrf_token = client.cookies.get("csrftoken") or ""
+            gql_queries = [
+                (
+                    "https://www.instagram.com/api/graphql",
+                    "PolarisLoggedOutDesktopWWWPostRootContentQuery",
+                    "27130156389949648",
+                    json.dumps({"media_id": media_id}, separators=(",", ":")),
+                ),
+                (
+                    "https://www.instagram.com/graphql/query",
+                    "PolarisPostRootQuery",
+                    "27128499623469141",
+                    json.dumps(
+                        {
+                            "shortcode": shortcode,
+                            "__relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider": False,
+                        },
+                        separators=(",", ":"),
+                    ),
+                ),
+                (
+                    "https://www.instagram.com/graphql/query",
+                    "PolarisPostActionLoadPostQueryQuery",
+                    "8845758582119845",
+                    json.dumps(
+                        {
                             "shortcode": shortcode,
                             "fetch_tagged_user_count": None,
                             "hoisted_comment_id": None,
                             "hoisted_reply_id": None,
-                        }),
+                        },
+                        separators=(",", ":"),
+                    ),
+                ),
+            ]
+
+            for endpoint_url, friendly_name, doc_id, variables_str in gql_queries:
+                if video_url or variants_by_res:
+                    break
+                try:
+                    gql_headers = {
+                        **api_base_headers,
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "X-FB-Friendly-Name": friendly_name,
+                        "X-FB-LSD": lsd_token,
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": f"https://www.instagram.com/reel/{shortcode}/",
+                    }
+                    if csrf_token:
+                        gql_headers["X-CSRFToken"] = csrf_token
+
+                    gql_data = {
+                        "lsd": lsd_token,
+                        "fb_api_caller_class": "RelayModern",
+                        "fb_api_req_friendly_name": friendly_name,
                         "server_timestamps": "true",
+                        "variables": variables_str,
                         "doc_id": doc_id,
                     }
-                    g_resp = await client.post("https://www.instagram.com/graphql/query", headers=gql_headers, data=gql_data)
+                    g_resp = await client.post(endpoint_url, headers=gql_headers, data=gql_data)
                     g_text = g_resp.text or ""
                     if g_resp.status_code == 200 and g_text:
                         try:
                             g_json = g_resp.json()
-                            media = (g_json.get("data") or {}).get("xdt_shortcode_media") or (g_json.get("data") or {}).get("shortcode_media") or {}
-                            if media:
-                                owner = media.get("owner") or {}
-                                if owner.get("username") and not uploader:
-                                    uploader = f"@{owner['username']}"
-                                if media.get("display_url") and not thumbnail:
-                                    thumbnail = media["display_url"]
-                                if media.get("video_duration"):
-                                    duration_sec = max(1, round(float(media["video_duration"])))
-                                cap_edges = ((media.get("edge_media_to_caption") or {}).get("edges")) or []
-                                if cap_edges and (cap_edges[0].get("node") or {}).get("text"):
-                                    description = cap_edges[0]["node"]["text"].strip()
-
-                                # Check direct video_url or carousel children
-                                if media.get("video_url"):
-                                    video_url = media["video_url"]
-                                for vver in media.get("video_versions") or []:
-                                    if vver.get("url"):
-                                        w = int(vver.get("width") or 0)
-                                        h = int(vver.get("height") or 0)
-                                        short_side = min(w, h) if (w and h) else 720
-                                        if short_side not in variants_by_res:
-                                            variants_by_res[short_side] = {
-                                                "short_side": short_side,
-                                                "dim_label": f"{w}x{h}" if (w and h) else "Original",
-                                                "url": vver["url"],
-                                            }
-                                if not video_url and not variants_by_res:
-                                    sidecar = ((media.get("edge_sidecar_to_children") or {}).get("edges")) or []
-                                    for edge in sidecar:
-                                        node = edge.get("node") or {}
-                                        if node.get("video_url"):
-                                            video_url = node["video_url"]
-                                            break
+                            data_root = g_json.get("data") or {}
+                            # Check 2026 xig_polaris_media.if_not_gated_logged_out
+                            polaris = data_root.get("xig_polaris_media") or {}
+                            if isinstance(polaris, dict):
+                                _consume_v1_or_gql_media(polaris.get("if_not_gated_logged_out") or polaris)
+                            # Check 2026 xdt_api__v1__media__shortcode__web_info.items[0]
+                            web_info = data_root.get("xdt_api__v1__media__shortcode__web_info") or {}
+                            if isinstance(web_info, dict) and isinstance(web_info.get("items"), list) and web_info["items"]:
+                                _consume_v1_or_gql_media(web_info["items"][0])
+                            # Check legacy xdt_shortcode_media / shortcode_media
+                            legacy_media = data_root.get("xdt_shortcode_media") or data_root.get("shortcode_media")
+                            if isinstance(legacy_media, dict):
+                                _consume_v1_or_gql_media(legacy_media)
                         except Exception:
                             pass
 
