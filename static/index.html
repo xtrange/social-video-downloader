@@ -24,7 +24,7 @@
     "url": "https://ddx.cl/",
     "applicationCategory": "MultimediaApplication",
     "operatingSystem": "All",
-    "inLanguage": "es-CL",
+    "inLanguage": "es_CL",
     "description": "Herramienta web gratuita en Chile para bajar videos y Reels de Instagram, TikTok sin marca de agua, Facebook, X, Pinterest, Threads, LinkedIn y Reddit con solo pegar el enlace.",
     "offers": {
       "@type": "Offer",
@@ -80,7 +80,17 @@
           <span id="video-duration" class="video-duration"></span>
         </div>
 
-        <div id="options-list" class="options-list"></div>
+        <!-- Bloque 1: Videos de menor a mayor resolución -->
+        <div class="options-block">
+          <div class="block-title">1. Video (de menor a mayor resolución)</div>
+          <div id="video-options-list" class="options-list"></div>
+        </div>
+
+        <!-- Bloque 2: Descarga de solo audio -->
+        <div class="options-block">
+          <div class="block-title">2. Solo audio</div>
+          <div id="audio-options-list" class="options-list"></div>
+        </div>
       </div>
     </section>
   </main>

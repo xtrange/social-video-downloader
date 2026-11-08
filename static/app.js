@@ -12,7 +12,8 @@
   const sourceBadge = document.getElementById('source-badge');
   const videoTitle = document.getElementById('video-title');
   const videoDuration = document.getElementById('video-duration');
-  const optionsList = document.getElementById('options-list');
+  const videoOptionsList = document.getElementById('video-options-list');
+  const audioOptionsList = document.getElementById('audio-options-list');
 
   let isResetMode = false;
   let analyzedUrl = '';
@@ -131,41 +132,54 @@
       a.remove();
       setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
     } catch (err) {
-      showMessage(err.message || 'Error al descargar el video.');
+      showMessage(err.message || 'Error al descargar el archivo.');
     } finally {
       btn.disabled = false;
       btn.textContent = originalLabel;
     }
   }
 
+  function createOptionRow(opt, data) {
+    const row = document.createElement('div');
+    row.className = 'option-row';
+
+    const left = document.createElement('div');
+    const recBadgeHtml = opt.recommended ? '<span class="rec-badge">Recomendado</span>' : '';
+    left.innerHTML = `
+      <div class="option-title-row">
+        <span class="option-label">${opt.label}</span>
+        ${recBadgeHtml}
+      </div>
+      <div class="option-meta">${opt.meta}</div>
+    `;
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `dl-btn ${opt.primary ? 'primary' : ''}`;
+    btn.textContent = 'Descargar';
+
+    btn.addEventListener('click', () => {
+      triggerFileDownload(data.original_url, opt.id, opt.ext, data.platform, btn);
+    });
+
+    row.appendChild(left);
+    row.appendChild(btn);
+    return row;
+  }
+
   function renderOptions(data) {
     sourceBadge.textContent = data.source_label || data.platform;
     videoTitle.textContent = data.title || '';
     videoDuration.textContent = formatDuration(data.duration);
-    optionsList.innerHTML = '';
+    videoOptionsList.innerHTML = '';
+    audioOptionsList.innerHTML = '';
 
-    (data.options || []).forEach((opt) => {
-      const row = document.createElement('div');
-      row.className = 'option-row';
+    (data.video_options || []).forEach((opt) => {
+      videoOptionsList.appendChild(createOptionRow(opt, data));
+    });
 
-      const left = document.createElement('div');
-      left.innerHTML = `
-        <div class="option-label">${opt.label}</div>
-        <div class="option-meta">${opt.meta}</div>
-      `;
-
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = `dl-btn ${opt.primary ? 'primary' : ''}`;
-      btn.textContent = 'Descargar';
-
-      btn.addEventListener('click', () => {
-        triggerFileDownload(data.original_url, opt.id, opt.ext, data.platform, btn);
-      });
-
-      row.appendChild(left);
-      row.appendChild(btn);
-      optionsList.appendChild(row);
+    (data.audio_options || []).forEach((opt) => {
+      audioOptionsList.appendChild(createOptionRow(opt, data));
     });
 
     resultBox.classList.remove('hidden');

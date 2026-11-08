@@ -9,22 +9,27 @@ from urllib.parse import urlparse
 import httpx
 import yt_dlp
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
+
+try:
+    import imageio_ffmpeg
+except ImportError:
+    imageio_ffmpeg = None
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(
-    title="Video Downloader API",
+    title="DDX.cl Video Downloader API",
     description=(
-        "Extrae y descarga videos automáticamente a partir del link desde "
+        "Extrae y descarga videos y audio automáticamente a partir del link desde "
         "Facebook, Instagram, TikTok, X, Pinterest, Threads, LinkedIn, Reddit, "
         "YouTube/Shorts, Twitch, Kick, Vimeo y Bluesky."
     ),
-    version="2.3.0",
+    version="3.0.0",
 )
 
 if STATIC_DIR.exists():
@@ -35,6 +40,19 @@ DEFAULT_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
+
+
+def get_ffmpeg_path() -> Optional[str]:
+    sys_ffmpeg = shutil.which("ffmpeg")
+    if sys_ffmpeg:
+        return sys_ffmpeg
+    if imageio_ffmpeg is not None:
+        try:
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            return None
+    return None
+
 
 PLATFORM_PATTERNS = {
     "facebook": re.compile(r"(?:https?://)?(?:www\.|m\.|web\.)?(?:facebook\.com|fb\.watch|fb\.com)/.+", re.I),
@@ -52,105 +70,43 @@ PLATFORM_PATTERNS = {
     "bluesky": re.compile(r"(?:https?://)?(?:www\.)?bsky\.app/.+", re.I),
 }
 
-SOURCE_SPECIFIC_OPTIONS = {
-    "tiktok": {
-        "source_label": "TikTok",
-        "options": [
-            {"id": "audio", "label": "Audio original", "meta": "M4A / MP3 · Solo audio (Más liviano)", "ext": "m4a", "primary": True},
-            {"id": "sd", "label": "MP4 · Calidad estándar", "meta": "720p · Carga rápida", "ext": "mp4", "primary": False},
-            {"id": "hd", "label": "MP4 · Sin marca de agua (HD)", "meta": "1080p · Máxima definición", "ext": "mp4", "primary": False},
-        ],
-    },
-    "instagram": {
-        "source_label": "Instagram",
-        "options": [
-            {"id": "audio", "label": "Pista de audio", "meta": "M4A / MP3 · Solo audio (Más liviano)", "ext": "m4a", "primary": True},
-            {"id": "sd", "label": "MP4 · Calidad media", "meta": "720p · Ligero", "ext": "mp4", "primary": False},
-            {"id": "hd", "label": "MP4 · Resolución original (Full HD)", "meta": "1080p · Reel / Post", "ext": "mp4", "primary": False},
-        ],
-    },
-    "x": {
-        "source_label": "X (Twitter)",
-        "options": [
-            {"id": "low", "label": "MP4 · Ligero para móvil (360p)", "meta": "360p · Menor tamaño", "ext": "mp4", "primary": True},
-            {"id": "sd", "label": "MP4 · Definición estándar (720p)", "meta": "720p · Balanceado", "ext": "mp4", "primary": False},
-            {"id": "hd", "label": "MP4 · Alta definición (1080p)", "meta": "1080p · Máxima calidad", "ext": "mp4", "primary": False},
-        ],
-    },
-    "facebook": {
-        "source_label": "Facebook",
-        "options": [
-            {"id": "audio", "label": "Solo audio", "meta": "M4A / MP3 · Pista de audio (Más liviano)", "ext": "m4a", "primary": True},
-            {"id": "sd", "label": "MP4 · Calidad SD", "meta": "480p · Estándar", "ext": "mp4", "primary": False},
-            {"id": "hd", "label": "MP4 · Calidad HD", "meta": "1080p / 720p · Alta definición", "ext": "mp4", "primary": False},
-        ],
-    },
-    "pinterest": {
-        "source_label": "Pinterest",
-        "options": [
-            {"id": "sd", "label": "MP4 · Calidad ligera", "meta": "480p · Menor tamaño", "ext": "mp4", "primary": True},
-            {"id": "hd", "label": "MP4 · Video Pin Original (HD)", "meta": "1080p / 720p · Alta calidad", "ext": "mp4", "primary": False},
-        ],
-    },
-    "threads": {
-        "source_label": "Threads",
-        "options": [
-            {"id": "audio", "label": "Solo audio", "meta": "M4A / MP3 · Audio del post (Más liviano)", "ext": "m4a", "primary": True},
-            {"id": "sd", "label": "MP4 · Calidad estándar", "meta": "720p · Compacto", "ext": "mp4", "primary": False},
-            {"id": "hd", "label": "MP4 · Calidad original (HD)", "meta": "1080p · Video de Threads", "ext": "mp4", "primary": False},
-        ],
-    },
-    "linkedin": {
-        "source_label": "LinkedIn",
-        "options": [
-            {"id": "sd", "label": "MP4 · Versión ligera", "meta": "480p · Menor peso", "ext": "mp4", "primary": True},
-            {"id": "hd", "label": "MP4 · Presentación / Post HD", "meta": "1080p / 720p · Alta nitidez", "ext": "mp4", "primary": False},
-        ],
-    },
-    "reddit": {
-        "source_label": "Reddit",
-        "options": [
-            {"id": "sd", "label": "MP4 · Compacto para compartir", "meta": "480p · Ideal para WhatsApp", "ext": "mp4", "primary": True},
-            {"id": "hd", "label": "MP4 · Video de Reddit (HD)", "meta": "1080p / 720p · Máxima calidad", "ext": "mp4", "primary": False},
-        ],
-    },
-    "youtube": {
-        "source_label": "YouTube / Shorts",
-        "options": [
-            {"id": "audio", "label": "Solo Audio", "meta": "M4A / MP3 · Pista de audio (Más liviano)", "ext": "m4a", "primary": True},
-            {"id": "sd", "label": "MP4 · Calidad estándar", "meta": "480p / 360p · Ligero", "ext": "mp4", "primary": False},
-            {"id": "hd", "label": "MP4 · Alta definición (HD)", "meta": "1080p / 720p · Video + Audio", "ext": "mp4", "primary": False},
-        ],
-    },
-    "twitch": {
-        "source_label": "Twitch",
-        "options": [
-            {"id": "sd", "label": "MP4 · Clip en 720p", "meta": "720p · Menor peso", "ext": "mp4", "primary": True},
-            {"id": "hd", "label": "MP4 · Clip en Full HD (1080p)", "meta": "1080p 60fps · Calidad original", "ext": "mp4", "primary": False},
-        ],
-    },
-    "kick": {
-        "source_label": "Kick",
-        "options": [
-            {"id": "sd", "label": "MP4 · Calidad media (720p)", "meta": "720p · Menor peso", "ext": "mp4", "primary": True},
-            {"id": "hd", "label": "MP4 · Clip en Full HD", "meta": "1080p · Calidad original", "ext": "mp4", "primary": False},
-        ],
-    },
-    "vimeo": {
-        "source_label": "Vimeo",
-        "options": [
-            {"id": "audio", "label": "Solo Audio", "meta": "M4A / MP3 · Pista limpia (Más liviano)", "ext": "m4a", "primary": True},
-            {"id": "sd", "label": "MP4 · Definición estándar (720p)", "meta": "720p · Balanceado", "ext": "mp4", "primary": False},
-            {"id": "hd", "label": "MP4 · Master HD (1080p)", "meta": "Alta tasa de bits · MP4", "ext": "mp4", "primary": False},
-        ],
-    },
-    "bluesky": {
-        "source_label": "Bluesky",
-        "options": [
-            {"id": "sd", "label": "MP4 · Ligero", "meta": "480p · Menor tamaño", "ext": "mp4", "primary": True},
-            {"id": "hd", "label": "MP4 · Video en alta definición", "meta": "1080p / 720p · MP4", "ext": "mp4", "primary": False},
-        ],
-    },
+PLATFORM_LABELS = {
+    "tiktok": "TikTok",
+    "instagram": "Instagram",
+    "x": "X (Twitter)",
+    "facebook": "Facebook",
+    "pinterest": "Pinterest",
+    "threads": "Threads",
+    "linkedin": "LinkedIn",
+    "reddit": "Reddit",
+    "youtube": "YouTube / Shorts",
+    "twitch": "Twitch",
+    "kick": "Kick",
+    "vimeo": "Vimeo",
+    "bluesky": "Bluesky",
+}
+
+DEFAULT_VIDEO_OPTIONS = {
+    "tiktok": [
+        {"id": "res_540", "label": "MP4 · Calidad ligera (540p)", "meta": "540p · Menor tamaño", "ext": "mp4"},
+        {"id": "res_720", "label": "MP4 · Calidad estándar (720p)", "meta": "720p · Sin marca de agua", "ext": "mp4"},
+        {"id": "res_1080", "label": "MP4 · Full HD (1080p)", "meta": "1080p · Máxima definición", "ext": "mp4"},
+    ],
+    "instagram": [
+        {"id": "res_480", "label": "MP4 · Calidad ligera (480p)", "meta": "480p · Descarga rápida", "ext": "mp4"},
+        {"id": "res_720", "label": "MP4 · Calidad media (720p)", "meta": "720p · Reel / Post", "ext": "mp4"},
+        {"id": "res_1080", "label": "MP4 · Resolución original (1080p)", "meta": "1080p · Full HD", "ext": "mp4"},
+    ],
+    "x": [
+        {"id": "res_360", "label": "MP4 · Ligero para móvil (360p)", "meta": "360p · Menor tamaño", "ext": "mp4"},
+        {"id": "res_720", "label": "MP4 · Definición estándar (720p)", "meta": "720p · Balanceado", "ext": "mp4"},
+        {"id": "res_1080", "label": "MP4 · Alta definición (1080p)", "meta": "1080p · Máxima calidad", "ext": "mp4"},
+    ],
+    "facebook": [
+        {"id": "res_480", "label": "MP4 · Calidad SD (480p)", "meta": "480p · Menor peso", "ext": "mp4"},
+        {"id": "res_720", "label": "MP4 · Calidad HD (720p)", "meta": "720p · Alta definición", "ext": "mp4"},
+        {"id": "res_1080", "label": "MP4 · Full HD (1080p)", "meta": "1080p · Máxima definición", "ext": "mp4"},
+    ],
 }
 
 
@@ -200,56 +156,129 @@ def detect_platform(url: str) -> Optional[str]:
     return None
 
 
-def select_format_stream(info: dict, quality: str) -> tuple[Optional[str], dict, str]:
-    """Selects the best matching direct stream URL, headers, and extension from yt-dlp info."""
+def format_size_mb(size_bytes: Optional[float]) -> Optional[str]:
+    if not size_bytes or size_bytes <= 0:
+        return None
+    mb = size_bytes / (1024 * 1024)
+    if mb < 1:
+        return f"{max(100, int(size_bytes / 1024))} KB"
+    return f"~{mb:.1f} MB"
+
+
+def build_two_blocks_from_info(info: dict, platform: str) -> tuple[list[dict], list[dict]]:
+    """
+    Builds two ordered blocks from yt-dlp info:
+    1) video_options: ordered strictly from lowest resolution to highest resolution, with the 1st marked recommended & primary.
+    2) audio_options: audio-only download option.
+    """
     formats = info.get("formats") or []
-    base_headers = info.get("http_headers") or {"User-Agent": DEFAULT_UA}
+    duration = info.get("duration") or 15
 
-    progressive = [
-        f for f in formats
-        if f.get("url")
-        and f.get("vcodec") not in (None, "none")
-        and f.get("acodec") not in (None, "none")
-        and not str(f.get("protocol", "")).startswith("m3u8")
-        and ".m3u8" not in str(f.get("url", ""))
+    # Discover real video resolutions (short side in pixels: 360, 480, 540, 720, 1080, etc.)
+    res_buckets: dict[int, dict] = {}
+    for f in formats:
+        vcodec = f.get("vcodec")
+        if not vcodec or vcodec == "none" or not f.get("url"):
+            continue
+        w = f.get("width")
+        h = f.get("height")
+        if w and h:
+            short_side = min(int(w), int(h))
+        elif h:
+            short_side = int(h)
+        elif w:
+            short_side = int(w)
+        else:
+            continue
+
+        if short_side < 144:
+            continue
+
+        # Normalize to nearest standard bucket so UI is clean
+        if short_side <= 380:
+            bucket = 360
+        elif short_side <= 500:
+            bucket = 480
+        elif short_side <= 600:
+            bucket = 540
+        elif short_side <= 800:
+            bucket = 720
+        elif short_side <= 1200:
+            bucket = 1080
+        else:
+            bucket = 1440
+
+        has_audio = f.get("acodec") not in (None, "none")
+        size = f.get("filesize") or f.get("filesize_approx")
+        if not size and f.get("tbr") and duration:
+            size = (float(f["tbr"]) * 1000 / 8) * float(duration)
+
+        existing = res_buckets.get(bucket)
+        # Prefer progressive formats that already contain audio
+        if not existing or (has_audio and not existing["has_audio"]):
+            res_buckets[bucket] = {
+                "bucket": bucket,
+                "has_audio": has_audio,
+                "size": size,
+            }
+
+    sorted_buckets = sorted(res_buckets.keys())
+
+    video_options: list[dict] = []
+    if len(sorted_buckets) >= 2:
+        for idx, b in enumerate(sorted_buckets):
+            item = res_buckets[b]
+            size_str = format_size_mb(item["size"])
+            if b <= 480:
+                desc = "Calidad ligera"
+            elif b <= 540:
+                desc = "Calidad media"
+            elif b <= 720:
+                desc = "Calidad HD"
+            else:
+                desc = "Full HD"
+
+            meta_parts = [f"{b}p"]
+            if size_str:
+                meta_parts.append(size_str)
+            else:
+                meta_parts.append("Menor peso" if idx == 0 else "Alta nitidez")
+
+            video_options.append({
+                "id": f"res_{b}",
+                "label": f"MP4 · {desc} ({b}p)",
+                "meta": " · ".join(meta_parts),
+                "ext": "mp4",
+                "primary": idx == 0,
+                "recommended": idx == 0,
+            })
+    else:
+        base_list = DEFAULT_VIDEO_OPTIONS.get(
+            platform,
+            [
+                {"id": "res_480", "label": "MP4 · Calidad ligera (480p)", "meta": "480p · Menor tamaño", "ext": "mp4"},
+                {"id": "res_720", "label": "MP4 · Calidad estándar (720p)", "meta": "720p · Balanceado", "ext": "mp4"},
+                {"id": "res_1080", "label": "MP4 · Alta definición (1080p)", "meta": "1080p · Máxima calidad", "ext": "mp4"},
+            ],
+        )
+        for idx, opt in enumerate(base_list):
+            copy_opt = dict(opt)
+            copy_opt["primary"] = idx == 0
+            copy_opt["recommended"] = idx == 0
+            video_options.append(copy_opt)
+
+    audio_options = [
+        {
+            "id": "audio",
+            "label": "MP3 · Solo pista de audio",
+            "meta": "128 kbps · Extraído del video",
+            "ext": "mp3",
+            "primary": False,
+            "recommended": False,
+        }
     ]
-    if not progressive:
-        progressive = [
-            f for f in formats
-            if f.get("url") and f.get("vcodec") not in (None, "none") and not str(f.get("protocol", "")).startswith("m3u8")
-        ]
 
-    audio_only = [
-        f for f in formats
-        if f.get("url")
-        and f.get("vcodec") in (None, "none")
-        and f.get("acodec") not in (None, "none")
-        and not str(f.get("protocol", "")).startswith("m3u8")
-    ]
-
-    progressive.sort(key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True)
-    audio_only.sort(key=lambda f: (f.get("abr") or f.get("tbr") or 0), reverse=True)
-
-    chosen = None
-    if quality == "audio" and audio_only:
-        chosen = audio_only[0]
-    elif quality == "low" and progressive:
-        low_cands = [f for f in progressive if (f.get("height") or 0) <= 480]
-        chosen = low_cands[0] if low_cands else progressive[-1]
-    elif quality == "sd" and progressive:
-        sd_cands = [f for f in progressive if (f.get("height") or 0) <= 720]
-        chosen = sd_cands[0] if sd_cands else progressive[0]
-    elif progressive:
-        chosen = progressive[0]
-
-    if chosen:
-        ext = chosen.get("ext") or ("m4a" if quality == "audio" else "mp4")
-        headers = dict(base_headers)
-        if chosen.get("http_headers"):
-            headers.update(chosen["http_headers"])
-        return chosen["url"], headers, ext
-
-    return info.get("url"), dict(base_headers), ("m4a" if quality == "audio" else "mp4")
+    return video_options, audio_options
 
 
 @app.get("/")
@@ -270,7 +299,7 @@ async def extract_video_info(payload: UrlRequest):
             ),
         )
 
-    profile = SOURCE_SPECIFIC_OPTIONS[platform]
+    source_label = PLATFORM_LABELS.get(platform, platform.capitalize())
 
     ydl_opts = {
         "quiet": True,
@@ -287,13 +316,15 @@ async def extract_video_info(payload: UrlRequest):
             if "entries" in info and info["entries"]:
                 info = info["entries"][0]
 
+            video_options, audio_options = build_two_blocks_from_info(info, platform)
             return {
                 "original_url": url,
                 "platform": platform,
-                "source_label": profile["source_label"],
-                "title": info.get("title") or info.get("description") or f"Video de {profile['source_label']}",
+                "source_label": source_label,
+                "title": info.get("title") or info.get("description") or f"Video de {source_label}",
                 "duration": info.get("duration") or 15,
-                "options": profile["options"],
+                "video_options": video_options,
+                "audio_options": audio_options,
             }
     except Exception as exc:
         raise HTTPException(
@@ -308,14 +339,12 @@ def cleanup_temp_dir(path: str) -> None:
 
 @app.get("/robots.txt")
 async def robots_txt():
-    from fastapi.responses import PlainTextResponse
     content = "User-agent: *\nAllow: /\nSitemap: https://ddx.cl/sitemap.xml\n"
     return PlainTextResponse(content)
 
 
 @app.get("/sitemap.xml")
 async def sitemap_xml():
-    from fastapi.responses import Response
     urls = [
         "https://ddx.cl/",
         "https://ddx.cl/bajar-video-instagram",
@@ -332,100 +361,112 @@ async def sitemap_xml():
     return Response(content=xml, media_type="application/xml")
 
 
+def build_ydl_format_selector(quality: str, has_ffmpeg: bool) -> tuple[str, bool]:
+    """
+    Returns (format_selector_string, is_audio) using yt-dlp's 'res' (short side) filter
+    so both 9:16 vertical Reels/TikToks and 16:9 horizontal videos match accurately.
+    """
+    if quality == "audio":
+        return "bestaudio[ext=m4a]/bestaudio/worst[vcodec!=none]/best", True
+
+    # Extract target resolution number (e.g. res_360 -> 360, res_720 -> 720)
+    target_res = 720
+    if quality.startswith("res_"):
+        try:
+            target_res = int(quality.split("_")[1])
+        except ValueError:
+            target_res = 720
+    elif quality == "low":
+        target_res = 480
+    elif quality == "sd":
+        target_res = 720
+    elif quality == "hd":
+        target_res = 1080
+
+    # Progressive single-file MP4 at or below target_res first, then ffmpeg-muxed if available, then fallback to worst/best so it never fails
+    if has_ffmpeg:
+        selector = (
+            f"best[vcodec!=none][acodec!=none][res<={target_res}][ext=mp4]/"
+            f"bestvideo[res<={target_res}][ext=mp4]+bestaudio[ext=m4a]/"
+            f"best[vcodec!=none][acodec!=none][res<={target_res}]/"
+            f"bestvideo[res<={target_res}]+bestaudio/"
+            f"worst[vcodec!=none][acodec!=none][ext=mp4]/"
+            f"best[ext=mp4]/best"
+        )
+    else:
+        selector = (
+            f"best[vcodec!=none][acodec!=none][res<={target_res}][ext=mp4]/"
+            f"best[vcodec!=none][acodec!=none][res<={target_res}]/"
+            f"worst[vcodec!=none][acodec!=none][ext=mp4]/"
+            f"best[vcodec!=none][acodec!=none]/best"
+        )
+    return selector, False
+
+
 @app.get("/api/download")
 async def download_video(
     url: str = Query(...),
-    quality: str = Query("hd"),
+    quality: str = Query("res_480"),
 ):
     platform = detect_platform(url) or "video"
     tmp_dir = tempfile.mkdtemp(prefix="dl_")
     output_template = os.path.join(tmp_dir, "media.%(ext)s")
 
-    has_ffmpeg = shutil.which("ffmpeg") is not None
-
-    if quality == "audio":
-        fmt_str = "bestaudio[ext=m4a]/bestaudio/best"
-    elif quality == "low":
-        fmt_str = "best[height<=480][ext=mp4]/best[height<=480]/best"
-    elif quality == "sd":
-        fmt_str = "best[height<=720][ext=mp4]/best[height<=720]/best"
-    else:
-        fmt_str = (
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-            if has_ffmpeg
-            else "best[ext=mp4]/best"
-        )
+    ffmpeg_path = get_ffmpeg_path()
+    has_ffmpeg = ffmpeg_path is not None
+    fmt_str, is_audio = build_ydl_format_selector(quality, has_ffmpeg)
 
     ydl_opts = {
         "format": fmt_str,
         "outtmpl": output_template,
         "noplaylist": True,
+        "nopart": True,
         "quiet": True,
         "no_warnings": True,
+        "socket_timeout": 15,
         "http_headers": {"User-Agent": DEFAULT_UA},
     }
-    if has_ffmpeg and quality != "audio":
+
+    if ffmpeg_path:
+        ydl_opts["ffmpeg_location"] = ffmpeg_path
+
+    if is_audio and has_ffmpeg:
+        ydl_opts["postprocessors"] = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "128",
+            }
+        ]
+    elif has_ffmpeg and not is_audio:
         ydl_opts["merge_output_format"] = "mp4"
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.extract_info(url, download=True)
 
-        files = os.listdir(tmp_dir)
+        files = [f for f in os.listdir(tmp_dir) if not f.endswith(".part")]
         if files:
             chosen_file = os.path.join(tmp_dir, files[0])
-            ext = os.path.splitext(chosen_file)[1].lstrip(".") or ("m4a" if quality == "audio" else "mp4")
-            media_type = "audio/mp4" if ext in ("m4a", "mp3") else "video/mp4"
+            ext = os.path.splitext(chosen_file)[1].lstrip(".") or ("mp3" if is_audio else "mp4")
+            media_type = "audio/mpeg" if ext == "mp3" else ("audio/mp4" if ext == "m4a" else "video/mp4")
             filename = f"ddx_{platform}_{quality}.{ext}"
             return FileResponse(
                 path=chosen_file,
                 filename=filename,
                 media_type=media_type,
-                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Cache-Control": "no-store",
+                },
                 background=BackgroundTask(cleanup_temp_dir, tmp_dir),
             )
-    except Exception:
-        pass
-
-    cleanup_temp_dir(tmp_dir)
-
-    try:
-        info_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "skip_download": True,
-            "http_headers": {"User-Agent": DEFAULT_UA},
-        }
-        with yt_dlp.YoutubeDL(info_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if "entries" in info and info["entries"]:
-                info = info["entries"][0]
-
-        stream_url, req_headers, ext = select_format_stream(info, quality)
-        if not stream_url:
-            raise HTTPException(status_code=422, detail="No se encontró un enlace de descarga directa.")
-
-        filename = f"ddx_{platform}_{quality}.{ext}"
-        media_type = "audio/mp4" if ext in ("m4a", "mp3") else "video/mp4"
-
-        async def stream_generator():
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-                async with client.stream("GET", stream_url, headers=req_headers) as resp:
-                    resp.raise_for_status()
-                    async for chunk in resp.aiter_bytes(chunk_size=65536):
-                        yield chunk
-
-        return StreamingResponse(
-            stream_generator(),
-            media_type=media_type,
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Cache-Control": "no-store",
-            },
-        )
     except Exception as exc:
+        cleanup_temp_dir(tmp_dir)
         raise HTTPException(
             status_code=422,
-            detail=f"No se pudo descargar el archivo: {str(exc)[:120]}",
+            detail=f"No se pudo procesar la descarga ({str(exc)[:140]}).",
         )
+
+    cleanup_temp_dir(tmp_dir)
+    raise HTTPException(status_code=422, detail="No se pudo generar el archivo de descarga.")
