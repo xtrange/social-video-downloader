@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, urlparse
@@ -144,6 +145,38 @@ def format_size_mb(size_bytes: Optional[float]) -> Optional[str]:
     if mb < 1:
         return f"{max(50, int(size_bytes / 1024))} KB"
     return f"~{mb:.1f} MB"
+
+
+def slugify_text(text: str, max_len: int = 28) -> str:
+    """Converts text into a clean ASCII slug without @, accents, or special characters."""
+    if not text:
+        return ""
+    clean = str(text).lstrip("@").strip()
+    clean = unicodedata.normalize("NFKD", clean).encode("ascii", "ignore").decode("ascii")
+    clean = re.sub(r"https?://\S+", "", clean)
+    clean = re.sub(r"[^a-zA-Z0-9]+", "-", clean).strip("-").lower()
+    if len(clean) > max_len:
+        clean = clean[:max_len].rstrip("-")
+    return clean
+
+
+def build_ddx_filename(platform: str, quality: str, ext: str, author: str = "", title: str = "") -> str:
+    """Builds a brand-reinforcing, OS-safe filename starting with ddx.cl- and without @."""
+    parts = ["ddx.cl", slugify_text(platform, 12) or "video"]
+    author_slug = slugify_text(author, 16)
+    title_slug = slugify_text(title, 24)
+    if author_slug:
+        parts.append(author_slug)
+    if title_slug and title_slug != author_slug:
+        parts.append(title_slug)
+
+    q_clean = quality.replace("xvar_", "").replace("fbvar_", "").replace("fmt_", "").replace("merge_", "").replace("res_", "")
+    q_slug = slugify_text(q_clean, 10)
+    if q_slug:
+        parts.append(q_slug)
+
+    safe_ext = re.sub(r"[^a-z0-9]", "", (ext or "mp4").lower()) or "mp4"
+    return "-".join(parts) + f".{safe_ext}"
 
 
 def build_exact_blocks_from_info(info: dict) -> tuple[list[dict], list[dict]]:
@@ -838,6 +871,8 @@ def build_ydl_format_selector(quality: str, has_ffmpeg: bool) -> tuple[str, bool
 async def download_video(
     url: str = Query(...),
     quality: str = Query("best_single"),
+    author: str = Query(""),
+    title: str = Query(""),
 ):
     platform = detect_platform(url) or "video"
     ffmpeg_path = get_ffmpeg_path()
@@ -856,7 +891,8 @@ async def download_video(
                 else (fb_resolved.get("sd_url") or fb_resolved.get("hd_url"))
             )
             if direct_fb_url and not is_audio:
-                filename = f"ddx_facebook_{quality.replace('fbvar_', '')}.mp4"
+                q_tag = "hd" if quality == "fbvar_hd" else "sd"
+                filename = build_ddx_filename("facebook", q_tag, "mp4", author, title or fb_resolved.get("title", ""))
                 async def stream_fb_variant():
                     async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
                         async with client.stream("GET", direct_fb_url, headers={"User-Agent": DEFAULT_UA}) as resp:
@@ -883,7 +919,7 @@ async def download_video(
                         timeout=20,
                         check=True,
                     )
-                    filename = "ddx_facebook_audio.mp3"
+                    filename = build_ddx_filename("facebook", "audio", "mp3", author, title or fb_resolved.get("title", ""))
                     return FileResponse(
                         path=out_mp3,
                         filename=filename,
@@ -901,7 +937,8 @@ async def download_video(
             vurls = x_data["variant_urls"]
             direct_x_url = vurls.get(quality) or vurls.get("default")
             if direct_x_url and not is_audio:
-                filename = f"ddx_x_{quality.replace('xvar_', '')}p.mp4"
+                q_tag = f"{quality.replace('xvar_', '')}p"
+                filename = build_ddx_filename("x", q_tag, "mp4", author or x_data.get("uploader", ""), title or x_data.get("description", ""))
                 async def stream_x_variant():
                     async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
                         async with client.stream("GET", direct_x_url, headers={"User-Agent": DEFAULT_UA}) as resp:
@@ -928,7 +965,7 @@ async def download_video(
                         timeout=20,
                         check=True,
                     )
-                    filename = "ddx_x_audio.mp3"
+                    filename = build_ddx_filename("x", "audio", "mp3", author or x_data.get("uploader", ""), title or x_data.get("description", ""))
                     return FileResponse(
                         path=out_mp3,
                         filename=filename,
@@ -970,15 +1007,22 @@ async def download_video(
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.extract_info(target_url, download=True)
+            info = ydl.extract_info(target_url, download=True)
+            if "entries" in info and info["entries"]:
+                info = info["entries"][0]
 
         files = [f for f in os.listdir(tmp_dir) if not f.endswith(".part")]
         if files:
             chosen_file = os.path.join(tmp_dir, files[0])
             ext = os.path.splitext(chosen_file)[1].lstrip(".") or ("mp3" if is_audio else "mp4")
             media_type = "audio/mpeg" if ext == "mp3" else ("audio/mp4" if ext == "m4a" else "video/mp4")
-            clean_q = re.sub(r"[^a-zA-Z0-9_-]", "", quality)
-            filename = f"ddx_{platform}_{clean_q}.{ext}"
+            filename = build_ddx_filename(
+                platform,
+                "audio" if is_audio else quality,
+                ext,
+                author or info.get("uploader") or "",
+                title or info.get("title") or "",
+            )
             return FileResponse(
                 path=chosen_file,
                 filename=filename,
@@ -998,3 +1042,13 @@ async def download_video(
 
     cleanup_temp_dir(tmp_dir)
     raise HTTPException(status_code=422, detail="No se pudo generar el archivo de descarga.")
+
+
+@app.get("/{full_path:path}")
+async def catch_all_prefix_url(full_path: str):
+    """Serves index.html for any path prefix (e.g. ddx.cl/https://...) so the frontend can auto-extract the URL."""
+    return FileResponse(
+        str(STATIC_DIR / "index.html"),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+

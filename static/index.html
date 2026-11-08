@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/index.css?v=3.4" />
+  <link rel="stylesheet" href="/static/index.css?v=3.6" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -24,7 +24,7 @@
     "url": "https://ddx.cl/",
     "applicationCategory": "MultimediaApplication",
     "operatingSystem": "All",
-    "inLanguage": "es-CL",
+    "inLanguage": "es_CL",
     "description": "Herramienta web gratuita en Chile para bajar videos y Reels de Instagram, TikTok sin marca de agua, Facebook, X, Pinterest, Threads, LinkedIn y Reddit con solo pegar el enlace.",
     "offers": {
       "@type": "Offer",
@@ -72,7 +72,7 @@
       </div>
 
       <div id="result-box" class="result hidden" aria-live="polite">
-        <!-- Resumen del video con screenshot pequeño y descripción extendida -->
+        <!-- Resumen del video con screenshot pequeño, descripción extendida y botón Copiar texto -->
         <div class="media-summary">
           <div class="thumb-wrap" id="thumb-wrap">
             <img id="video-thumb" class="video-thumb hidden" alt="Vista previa del video" referrerpolicy="no-referrer" />
@@ -89,7 +89,10 @@
                 <span id="source-badge" class="source-badge">Fuente</span>
                 <span id="video-uploader" class="video-uploader"></span>
               </div>
-              <span id="video-duration" class="video-duration"></span>
+              <div class="result-actions-right">
+                <button type="button" id="copy-desc-btn" class="copy-desc-btn hidden" title="Copiar descripción del video">Copiar texto</button>
+                <span id="video-duration" class="video-duration"></span>
+              </div>
             </div>
             <p id="video-title" class="video-description"></p>
           </div>
@@ -110,6 +113,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=3.4"></script>
+  <script src="/static/app.js?v=3.6"></script>
 </body>
 </html>

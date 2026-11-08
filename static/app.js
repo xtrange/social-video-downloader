@@ -13,6 +13,7 @@
   const videoUploader = document.getElementById('video-uploader');
   const videoTitle = document.getElementById('video-title');
   const videoDuration = document.getElementById('video-duration');
+  const copyDescBtn = document.getElementById('copy-desc-btn');
   const videoThumb = document.getElementById('video-thumb');
   const thumbPlaceholder = document.getElementById('thumb-placeholder');
   const videoOptionsList = document.getElementById('video-options-list');
@@ -20,6 +21,48 @@
 
   let isResetMode = false;
   let analyzedUrl = '';
+  let currentDescription = '';
+
+  function slugifyText(text, maxLen) {
+    if (!text) return '';
+    let clean = String(text).replace(/^@+/, '').trim();
+    clean = clean.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    clean = clean.replace(/https?:\/\/\S+/gi, '');
+    clean = clean.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
+    if (maxLen && clean.length > maxLen) {
+      clean = clean.slice(0, maxLen).replace(/-+$/g, '');
+    }
+    return clean;
+  }
+
+  function buildDdxFilename(platform, quality, ext, author, title) {
+    const parts = ['ddx.cl', slugifyText(platform, 12) || 'video'];
+    const authorSlug = slugifyText(author, 16);
+    const titleSlug = slugifyText(title, 24);
+    if (authorSlug) parts.push(authorSlug);
+    if (titleSlug && titleSlug !== authorSlug) parts.push(titleSlug);
+
+    const qClean = String(quality || '')
+      .replace(/^(xvar_|fbvar_|fmt_|merge_|res_)/, '');
+    const qSlug = slugifyText(qClean, 10);
+    if (qSlug) parts.push(qSlug);
+
+    const safeExt = String(ext || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '') || 'mp4';
+    return `${parts.join('-')}.${safeExt}`;
+  }
+
+  function parseEstimatedBytes(metaStr) {
+    if (!metaStr) return 0;
+    const mbMatch = String(metaStr).match(/([\d.]+)\s*MB/i);
+    if (mbMatch) {
+      return Math.round(parseFloat(mbMatch[1]) * 1024 * 1024);
+    }
+    const kbMatch = String(metaStr).match(/([\d.]+)\s*KB/i);
+    if (kbMatch) {
+      return Math.round(parseFloat(kbMatch[1]) * 1024);
+    }
+    return 0;
+  }
 
   function setButtonMode(mode) {
     if (mode === 'loading') {
@@ -43,6 +86,7 @@
   function resetAll() {
     urlInput.value = '';
     analyzedUrl = '';
+    currentDescription = '';
     clearBtn.classList.add('hidden');
     pasteBtn.classList.remove('hidden');
     resultBox.classList.add('hidden');
@@ -105,15 +149,42 @@
     }
   }
 
-  async function triggerFileDownload(url, quality, ext, platform, btn) {
-    const originalLabel = btn.textContent;
+  async function triggerFileDownload(opt, data, btn) {
+    const originalLabel = 'Descargar';
+    const url = data.original_url;
+    const quality = opt.id;
+    const ext = opt.ext || 'mp4';
+    const platform = data.platform || 'video';
+    const author = data.uploader || '';
+    const title = data.description || data.title || '';
+
     btn.disabled = true;
-    btn.textContent = 'Descargando...';
+    btn.classList.remove('done');
+    btn.classList.add('downloading');
     hideMessage();
 
+    let prepPct = 4;
+    btn.style.setProperty('--dl-progress', `${prepPct}%`);
+    btn.textContent = `Descargando ${prepPct}%`;
+
+    const prepTimer = setInterval(() => {
+      if (prepPct < 24) {
+        prepPct += 3;
+        btn.style.setProperty('--dl-progress', `${prepPct}%`);
+        btn.textContent = `Descargando ${prepPct}%`;
+      }
+    }, 220);
+
     try {
-      const params = new URLSearchParams({ url, quality });
+      const params = new URLSearchParams({
+        url,
+        quality,
+        author: author.slice(0, 60),
+        title: title.slice(0, 80)
+      });
       const response = await fetch(`/api/download?${params.toString()}`);
+      clearInterval(prepTimer);
+
       if (!response.ok) {
         let detail = 'No se pudo descargar el archivo.';
         try {
@@ -123,10 +194,52 @@
         throw new Error(detail);
       }
 
-      const blob = await response.blob();
-      const filename = `ddx_${platform || 'video'}_${quality}.${ext || 'mp4'}`;
-      const blobUrl = URL.createObjectURL(blob);
+      const contentLengthHeader = response.headers.get('Content-Length');
+      const totalBytes = (contentLengthHeader ? parseInt(contentLengthHeader, 10) : 0) || parseEstimatedBytes(opt.meta);
+      const contentType = response.headers.get('Content-Type') || (ext === 'mp3' ? 'audio/mpeg' : 'video/mp4');
 
+      let blob;
+      if (response.body && typeof response.body.getReader === 'function') {
+        const reader = response.body.getReader();
+        const chunks = [];
+        let receivedBytes = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            receivedBytes += value.byteLength;
+            if (totalBytes > 0) {
+              const pct = Math.min(99, Math.max(prepPct, Math.round((receivedBytes / totalBytes) * 100)));
+              btn.style.setProperty('--dl-progress', `${pct}%`);
+              btn.textContent = `Descargando ${pct}%`;
+            } else {
+              const mb = (receivedBytes / (1024 * 1024)).toFixed(1);
+              const pseudoPct = Math.min(95, prepPct + Math.round((receivedBytes / (3 * 1024 * 1024)) * 70));
+              btn.style.setProperty('--dl-progress', `${pseudoPct}%`);
+              btn.textContent = `Descargando ${mb} MB`;
+            }
+          }
+        }
+        blob = new Blob(chunks, { type: contentType });
+      } else {
+        blob = await response.blob();
+      }
+
+      btn.style.setProperty('--dl-progress', '100%');
+      btn.textContent = 'Descargando 100%';
+
+      let filename = buildDdxFilename(platform, opt.label ? opt.label.replace(/^MP[34]\s*·\s*/i, '') : quality, ext, author, title);
+      const disposition = response.headers.get('Content-Disposition');
+      if (disposition) {
+        const match = disposition.match(/filename="([^"]+)"/);
+        if (match && match[1]) {
+          filename = match[1];
+        }
+      }
+
+      const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = blobUrl;
       a.download = filename;
@@ -134,11 +247,24 @@
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+      btn.classList.remove('downloading');
+      btn.classList.add('done');
+      btn.style.removeProperty('--dl-progress');
+      btn.textContent = '✓ Guardado';
+
+      setTimeout(() => {
+        btn.classList.remove('done');
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+      }, 2400);
     } catch (err) {
-      showMessage(err.message || 'Error al descargar el archivo.');
-    } finally {
+      clearInterval(prepTimer);
+      btn.classList.remove('downloading', 'done');
+      btn.style.removeProperty('--dl-progress');
       btn.disabled = false;
       btn.textContent = originalLabel;
+      showMessage(err.message || 'Error al descargar el archivo.');
     }
   }
 
@@ -162,7 +288,7 @@
     btn.textContent = 'Descargar';
 
     btn.addEventListener('click', () => {
-      triggerFileDownload(data.original_url, opt.id, opt.ext, data.platform, btn);
+      triggerFileDownload(opt, data, btn);
     });
 
     row.appendChild(left);
@@ -195,9 +321,16 @@
     if (videoUploader) {
       videoUploader.textContent = data.uploader || '';
     }
-    videoTitle.textContent = data.description || data.title || '';
+    currentDescription = data.description || data.title || '';
+    videoTitle.textContent = currentDescription;
     videoDuration.textContent = formatDuration(data.duration);
     updateThumbnail(data.thumbnail);
+
+    if (copyDescBtn) {
+      copyDescBtn.textContent = 'Copiar texto';
+      copyDescBtn.classList.remove('copied');
+      copyDescBtn.classList.toggle('hidden', !currentDescription);
+    }
 
     const videoList = data.video_options || (data.options || []).filter((o) => o.id !== 'audio');
     const audioList = data.audio_options || (data.options || []).filter((o) => o.id === 'audio');
@@ -210,6 +343,61 @@
     }
 
     resultBox.classList.remove('hidden');
+  }
+
+  if (copyDescBtn) {
+    copyDescBtn.addEventListener('click', async () => {
+      if (!currentDescription) return;
+      try {
+        await navigator.clipboard.writeText(currentDescription);
+        copyDescBtn.textContent = '✓ Copiado';
+        copyDescBtn.classList.add('copied');
+        setTimeout(() => {
+          copyDescBtn.textContent = 'Copiar texto';
+          copyDescBtn.classList.remove('copied');
+        }, 1800);
+      } catch (_) {}
+    });
+  }
+
+  function checkUrlPrefixOnLoad() {
+    try {
+      const searchParams = new URLSearchParams(window.location.search);
+      const queryUrl = searchParams.get('url');
+      if (queryUrl && queryUrl.trim()) {
+        const cleanQueryUrl = queryUrl.trim();
+        urlInput.value = cleanQueryUrl;
+        clearBtn.classList.remove('hidden');
+        pasteBtn.classList.add('hidden');
+        window.history.replaceState(null, '', '/');
+        processUrl(cleanQueryUrl);
+        return;
+      }
+
+      const rawPath = window.location.pathname || '';
+      if (rawPath.length > 1 && !rawPath.startsWith('/static/') && !rawPath.startsWith('/api/')) {
+        let candidate = rawPath.slice(1) + (window.location.search || '') + (window.location.hash || '');
+        try {
+          candidate = decodeURIComponent(candidate);
+        } catch (_) {}
+
+        // Fix browser-collapsed single slash after scheme: https:/example.com -> https://example.com
+        candidate = candidate.replace(/^(https?):\/([^/])/i, '$1://$2');
+
+        // If user wrote ddx.cl/www.instagram.com/... or ddx.cl/instagram.com/... without scheme
+        if (!/^https?:\/\//i.test(candidate) && /^[a-z0-9.-]+\.[a-z]{2,}\//i.test(candidate)) {
+          candidate = `https://${candidate}`;
+        }
+
+        if (/^https?:\/\//i.test(candidate)) {
+          urlInput.value = candidate;
+          clearBtn.classList.remove('hidden');
+          pasteBtn.classList.add('hidden');
+          window.history.replaceState(null, '', '/');
+          processUrl(candidate);
+        }
+      }
+    } catch (_) {}
   }
 
   urlInput.addEventListener('input', () => {
@@ -261,4 +449,6 @@
       processUrl(urlInput.value);
     }
   });
+
+  checkUrlPrefixOnLoad();
 })();
