@@ -6,9 +6,12 @@
   const pasteBtn = document.getElementById('paste-btn');
   const clearBtn = document.getElementById('clear-btn');
   const submitBtn = document.getElementById('submit-btn');
+  const themeToggleBtn = document.getElementById('theme-toggle-btn');
+  const themeIcon = document.getElementById('theme-icon');
   const feedbackBox = document.getElementById('feedback-box');
   const loadingBox = document.getElementById('loading-box');
   const resultBox = document.getElementById('result-box');
+  const carouselTabs = document.getElementById('carousel-tabs');
   const sourceBadge = document.getElementById('source-badge');
   const videoUploader = document.getElementById('video-uploader');
   const videoTitle = document.getElementById('video-title');
@@ -29,9 +32,44 @@
   let currentDescription = '';
   let currentThumbUrl = '';
   let currentData = null;
+  let currentCarouselIndex = 0;
   let currentPreviewPrimaryUrl = '';
   let currentPreviewFallbackUrl = '';
   let isPlayingPreview = false;
+
+  // Mejora 9: Modo Oscuro / Claro automático con selector minimalista y memoria en localStorage
+  function getActiveTheme() {
+    const attr = document.documentElement.getAttribute('data-theme');
+    if (attr === 'dark' || attr === 'light') return attr;
+    try {
+      const saved = localStorage.getItem('ddx_theme');
+      if (saved === 'dark' || saved === 'light') return saved;
+    } catch (_) {}
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  }
+
+  function applyTheme(theme) {
+    const resolved = theme === 'dark' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', resolved);
+    if (themeIcon) {
+      themeIcon.textContent = resolved === 'dark' ? '☀' : '☾';
+    }
+    if (themeToggleBtn) {
+      themeToggleBtn.title = resolved === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro';
+    }
+  }
+
+  applyTheme(getActiveTheme());
+
+  if (themeToggleBtn) {
+    themeToggleBtn.addEventListener('click', () => {
+      const nextTheme = getActiveTheme() === 'dark' ? 'light' : 'dark';
+      try {
+        localStorage.setItem('ddx_theme', nextTheme);
+      } catch (_) {}
+      applyTheme(nextTheme);
+    });
+  }
 
   // Mejora 4: Registrar Service Worker para PWA e integración con "Compartir -> DDX.cl" en móviles
   if ('serviceWorker' in navigator) {
@@ -68,12 +106,15 @@
     return clean;
   }
 
-  function buildDdxFilename(platform, quality, ext, author, title) {
+  function buildDdxFilename(platform, quality, ext, author, title, slideIndex) {
     const parts = ['ddx.cl', slugifyText(platform, 12) || 'video'];
     const authorSlug = slugifyText(author, 16);
     const titleSlug = slugifyText(title, 24);
     if (authorSlug) parts.push(authorSlug);
     if (titleSlug && titleSlug !== authorSlug) parts.push(titleSlug);
+    if (typeof slideIndex === 'number' && slideIndex >= 0) {
+      parts.push(`v${slideIndex + 1}`);
+    }
 
     const qClean = String(quality || '')
       .replace(/^(xvar_|fbvar_|igvar_|tkvar_|rdvar_|fmt_|merge_|res_)/, '');
@@ -108,6 +149,12 @@
       videoPreviewPlayer.classList.add('hidden');
     }
     if (videoDuration) videoDuration.classList.remove('hidden');
+    if (currentThumbUrl && videoThumb) {
+      videoThumb.classList.remove('hidden');
+      if (thumbPlayOverlay && currentPreviewPrimaryUrl) {
+        thumbPlayOverlay.classList.remove('hidden');
+      }
+    }
   }
 
   function setButtonMode(mode) {
@@ -136,8 +183,13 @@
     currentDescription = '';
     currentThumbUrl = '';
     currentData = null;
+    currentCarouselIndex = 0;
     currentPreviewPrimaryUrl = '';
     currentPreviewFallbackUrl = '';
+    if (carouselTabs) {
+      carouselTabs.innerHTML = '';
+      carouselTabs.classList.add('hidden');
+    }
     clearBtn.classList.add('hidden');
     pasteBtn.classList.remove('hidden');
     resultBox.classList.add('hidden');
@@ -248,6 +300,8 @@
     const author = data.uploader || '';
     const title = data.description || data.title || '';
     const cleanQualityLabel = opt.label ? opt.label.replace(/^MP[34]\s*·\s*/i, '') : quality;
+    const isCarousel = Array.isArray(data.carousel_items) && data.carousel_items.length > 1;
+    const slideIdx = isCarousel ? currentCarouselIndex : undefined;
 
     btn.disabled = true;
     btn.classList.remove('done');
@@ -268,7 +322,7 @@
 
     try {
       let blob = null;
-      let filename = buildDdxFilename(platform, cleanQualityLabel, ext, author, title);
+      let filename = buildDdxFilename(platform, cleanQualityLabel, ext, author, title, slideIdx);
 
       // PALANCA 1: Intento de descarga 100% directa Navegador <- CDN de origen (0 consumo en Vercel)
       if (opt.direct_url && quality !== 'audio') {
@@ -291,7 +345,10 @@
 
       // FALLBACK AUTOMÁTICO: Si no hubo descarga directa por CORS o requiere unión de audio/conversión MP3
       if (!blob) {
-        const fallbackCdnUrl = opt.direct_url || ((data.video_options && data.video_options[0] && data.video_options[0].direct_url) || '');
+        const activeVideoOpts = isCarousel && data.carousel_items[currentCarouselIndex]
+          ? data.carousel_items[currentCarouselIndex].video_options
+          : data.video_options;
+        const fallbackCdnUrl = opt.direct_url || ((activeVideoOpts && activeVideoOpts[0] && activeVideoOpts[0].direct_url) || '');
         const params = new URLSearchParams({
           url,
           quality,
@@ -311,11 +368,13 @@
           throw new Error(detail);
         }
 
-        const disposition = response.headers.get('Content-Disposition');
-        if (disposition) {
-          const match = disposition.match(/filename="([^"]+)"/);
-          if (match && match[1]) {
-            filename = match[1];
+        if (!isCarousel) {
+          const disposition = response.headers.get('Content-Disposition');
+          if (disposition) {
+            const match = disposition.match(/filename="([^"]+)"/);
+            if (match && match[1]) {
+              filename = match[1];
+            }
           }
         }
 
@@ -448,28 +507,19 @@
     }
   }
 
-  function renderOptions(data) {
+  function applySlideToView(data, slideObj) {
     stopPreviewPlayer();
-    currentData = data;
-    sourceBadge.textContent = data.source_label || data.platform;
-    if (videoUploader) {
-      videoUploader.textContent = data.uploader || '';
-    }
-    currentDescription = data.description || data.title || '';
-    videoTitle.textContent = currentDescription;
-    videoTitle.classList.remove('expanded');
 
-    // Mejora 2: Mostrar botón "Ver más" si la descripción es extensa
-    if (toggleDescBtn) {
-      const isLong = currentDescription.length > 165 || currentDescription.split('\n').length > 4;
-      toggleDescBtn.textContent = 'Ver más';
-      toggleDescBtn.classList.toggle('hidden', !isLong);
-    }
+    const durationVal = slideObj ? slideObj.duration : data.duration;
+    const thumbVal = (slideObj && slideObj.thumbnail) ? slideObj.thumbnail : data.thumbnail;
+    const videoList = (slideObj && slideObj.video_options)
+      ? slideObj.video_options
+      : (data.video_options || (data.options || []).filter((o) => o.id !== 'audio'));
+    const audioList = (slideObj && slideObj.audio_options)
+      ? slideObj.audio_options
+      : (data.audio_options || (data.options || []).filter((o) => o.id === 'audio'));
 
-    videoDuration.textContent = formatDuration(data.duration);
-
-    const videoList = data.video_options || (data.options || []).filter((o) => o.id !== 'audio');
-    const audioList = data.audio_options || (data.options || []).filter((o) => o.id === 'audio');
+    videoDuration.textContent = formatDuration(durationVal);
 
     // Mejora 1: Configurar URLs para el mini-player al hacer clic en el screenshot
     const firstOpt = videoList[0];
@@ -486,13 +536,7 @@
       currentPreviewFallbackUrl = '';
     }
 
-    updateThumbnail(data.thumbnail, !!currentPreviewPrimaryUrl);
-
-    if (copyDescBtn) {
-      copyDescBtn.textContent = 'Copiar texto';
-      copyDescBtn.classList.remove('copied');
-      copyDescBtn.classList.toggle('hidden', !currentDescription);
-    }
+    updateThumbnail(thumbVal, !!currentPreviewPrimaryUrl);
 
     if (videoOptionsList && audioOptionsList) {
       videoOptionsList.innerHTML = '';
@@ -500,6 +544,81 @@
       videoList.forEach((opt) => videoOptionsList.appendChild(createOptionRow(opt, data)));
       audioList.forEach((opt) => audioOptionsList.appendChild(createOptionRow(opt, data)));
     }
+  }
+
+  // Mejora 8: Cambiar de video activo dentro de un carrusel
+  function selectCarouselSlide(slideIdx) {
+    if (!currentData || !Array.isArray(currentData.carousel_items)) return;
+    const slideObj = currentData.carousel_items[slideIdx];
+    if (!slideObj) return;
+    currentCarouselIndex = slideIdx;
+
+    if (carouselTabs) {
+      const btns = carouselTabs.querySelectorAll('.carousel-tab-btn');
+      btns.forEach((b, i) => {
+        const active = i === slideIdx;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+    }
+
+    applySlideToView(currentData, slideObj);
+  }
+
+  function renderOptions(data) {
+    stopPreviewPlayer();
+    currentData = data;
+    currentCarouselIndex = 0;
+
+    sourceBadge.textContent = data.source_label || data.platform;
+    if (videoUploader) {
+      videoUploader.textContent = data.uploader || '';
+    }
+    currentDescription = data.description || data.title || '';
+    videoTitle.textContent = currentDescription;
+    videoTitle.classList.remove('expanded');
+
+    // Mejora 2: Mostrar botón "Ver más" si la descripción es extensa
+    if (toggleDescBtn) {
+      const isLong = currentDescription.length > 165 || currentDescription.split('\n').length > 4;
+      toggleDescBtn.textContent = 'Ver más';
+      toggleDescBtn.classList.toggle('hidden', !isLong);
+    }
+
+    if (copyDescBtn) {
+      copyDescBtn.textContent = 'Copiar texto';
+      copyDescBtn.classList.remove('copied');
+      copyDescBtn.classList.toggle('hidden', !currentDescription);
+    }
+
+    // Mejora 8: Renderizar pestañas si la publicación es un carrusel con 2 o más videos
+    const hasCarousel = Array.isArray(data.carousel_items) && data.carousel_items.length > 1;
+    if (carouselTabs) {
+      carouselTabs.innerHTML = '';
+      if (hasCarousel) {
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'carousel-tabs-label';
+        labelSpan.textContent = `Carrusel (${data.carousel_items.length} videos):`;
+        carouselTabs.appendChild(labelSpan);
+
+        data.carousel_items.forEach((item, idx) => {
+          const tabBtn = document.createElement('button');
+          tabBtn.type = 'button';
+          tabBtn.role = 'tab';
+          tabBtn.className = `carousel-tab-btn ${idx === 0 ? 'active' : ''}`;
+          tabBtn.setAttribute('aria-selected', idx === 0 ? 'true' : 'false');
+          tabBtn.textContent = item.label || `Video ${idx + 1}`;
+          tabBtn.addEventListener('click', () => selectCarouselSlide(idx));
+          carouselTabs.appendChild(tabBtn);
+        });
+        carouselTabs.classList.remove('hidden');
+      } else {
+        carouselTabs.classList.add('hidden');
+      }
+    }
+
+    const firstSlide = hasCarousel ? data.carousel_items[0] : null;
+    applySlideToView(data, firstSlide);
 
     resultBox.classList.remove('hidden');
   }
@@ -559,12 +678,14 @@
         const res = await fetch(`/api/thumbnail?url=${encodeURIComponent(currentThumbUrl)}`);
         if (!res.ok) throw new Error('Error');
         const blob = await res.blob();
+        const isCarousel = Array.isArray(currentData.carousel_items) && currentData.carousel_items.length > 1;
         const filename = buildDdxFilename(
           currentData.platform || 'video',
           'portada',
           'jpg',
           currentData.uploader || '',
-          currentDescription
+          currentDescription,
+          isCarousel ? currentCarouselIndex : undefined
         );
         const blobUrl = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -665,6 +786,37 @@
       pasteBtn.classList.toggle('hidden', !!cleanVal);
       if (cleanVal) processUrl(cleanVal);
     }, 30);
+  });
+
+  // Mejora 10: Pegado instantáneo global (Ctrl+V / Cmd+V en cualquier parte de la pantalla) y tecla Escape
+  document.addEventListener('paste', (e) => {
+    if (document.activeElement === urlInput) return;
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (document.activeElement && document.activeElement.isContentEditable)) {
+      return;
+    }
+    const pastedText = (e.clipboardData || window.clipboardData)?.getData('text');
+    if (!pastedText || !pastedText.trim()) return;
+    const cleanVal = extractCleanUrl(pastedText);
+    if (cleanVal) {
+      e.preventDefault();
+      urlInput.value = cleanVal;
+      clearBtn.classList.remove('hidden');
+      pasteBtn.classList.add('hidden');
+      processUrl(cleanVal);
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (isPlayingPreview) {
+        e.preventDefault();
+        stopPreviewPlayer();
+      } else if (urlInput.value.trim() || !resultBox.classList.contains('hidden')) {
+        e.preventDefault();
+        resetAll();
+      }
+    }
   });
 
   pasteBtn.addEventListener('click', async () => {

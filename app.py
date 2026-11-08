@@ -585,18 +585,18 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
     """
     Queries X's syndication API and vxtwitter to obtain the exact MP4 variants
     actually hosted on video.twimg.com when yt-dlp is blocked on datacenter IPs.
+    Supports multi-video tweets (up to 4 videos in a single post).
     """
     m = re.search(r"(?:twitter\.com|x\.com)/([^/]+)/status/(\d+)", url, re.I)
     if not m:
         return None
     user, status_id = m.group(1), m.group(2)
 
-    variants_by_res: dict[int, dict] = {}
+    x_slides: list[dict] = []
     title = f"Publicación de @{user} en X"
     description = ""
     uploader = f"@{user}"
     thumbnail = None
-    duration_sec = 15
 
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         try:
@@ -612,12 +612,13 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
                     uploader = f"@{usr_obj['screen_name']}"
                 media_details = sdata.get("mediaDetails") or []
                 for md in media_details:
-                    if md.get("media_url_https") and not thumbnail:
-                        thumbnail = md["media_url_https"]
+                    slide_thumb = md.get("media_url_https")
+                    if slide_thumb and not thumbnail:
+                        thumbnail = slide_thumb
                     vinfo = md.get("video_info") or {}
                     dur_ms = vinfo.get("duration_millis")
-                    if dur_ms:
-                        duration_sec = max(1, round(dur_ms / 1000))
+                    slide_dur = max(1, round(dur_ms / 1000)) if dur_ms else 15
+                    slide_vars: dict[int, dict] = {}
                     for var in vinfo.get("variants") or []:
                         if var.get("content_type") == "video/mp4" and var.get("url"):
                             vurl = var["url"]
@@ -631,20 +632,26 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
                                 short_side = bitrate // 1000 if bitrate else 480
                                 dim_label = "MP4"
 
-                            size_est = (bitrate / 8) * duration_sec if bitrate and duration_sec else None
-                            existing = variants_by_res.get(short_side)
+                            size_est = (bitrate / 8) * slide_dur if bitrate and slide_dur else None
+                            existing = slide_vars.get(short_side)
                             if not existing or bitrate > existing["bitrate"]:
-                                variants_by_res[short_side] = {
+                                slide_vars[short_side] = {
                                     "short_side": short_side,
                                     "dim_label": dim_label,
                                     "bitrate": bitrate,
                                     "size": size_est,
                                     "url": vurl,
                                 }
+                    if slide_vars:
+                        x_slides.append({
+                            "variants_by_res": slide_vars,
+                            "thumbnail": slide_thumb or thumbnail,
+                            "duration": slide_dur,
+                        })
         except Exception:
             pass
 
-        if not variants_by_res:
+        if not x_slides:
             try:
                 vx_url = f"https://api.vxtwitter.com/{user}/status/{status_id}"
                 resp = await client.get(vx_url, headers={"User-Agent": DEFAULT_UA})
@@ -657,53 +664,34 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
                         uploader = f"@{vdata['user_screen_name']}"
                     for m_item in vdata.get("media_extended") or []:
                         if m_item.get("type") in ("video", "gif") and m_item.get("url"):
-                            if m_item.get("thumbnail_url") and not thumbnail:
-                                thumbnail = m_item["thumbnail_url"]
+                            slide_thumb = m_item.get("thumbnail_url")
+                            if slide_thumb and not thumbnail:
+                                thumbnail = slide_thumb
                             dur_ms = m_item.get("duration_millis") or 15000
-                            duration_sec = max(1, round(dur_ms / 1000))
+                            slide_dur = max(1, round(dur_ms / 1000))
                             sz = m_item.get("size") or {}
                             w = int(sz.get("width") or 0)
                             h = int(sz.get("height") or 0)
                             short_side = min(w, h) if (w and h) else 720
                             dim_label = f"{w}x{h}" if (w and h) else "Original"
-                            variants_by_res[short_side] = {
-                                "short_side": short_side,
-                                "dim_label": dim_label,
-                                "bitrate": 0,
-                                "size": None,
-                                "url": m_item["url"],
-                            }
-                            break
+                            x_slides.append({
+                                "variants_by_res": {
+                                    short_side: {
+                                        "short_side": short_side,
+                                        "dim_label": dim_label,
+                                        "bitrate": 0,
+                                        "size": None,
+                                        "url": m_item["url"],
+                                    }
+                                },
+                                "thumbnail": slide_thumb or thumbnail,
+                                "duration": slide_dur,
+                            })
             except Exception:
                 pass
 
-    if not variants_by_res:
+    if not x_slides:
         return None
-
-    sorted_res = sorted(variants_by_res.keys())
-    video_options = []
-    variant_urls = {}
-
-    for idx, r in enumerate(sorted_res):
-        v = variants_by_res[r]
-        opt_id = f"xvar_{r}"
-        variant_urls[opt_id] = v["url"]
-        size_str = format_size_mb(v["size"])
-        meta_parts = [v["dim_label"]]
-        if size_str:
-            meta_parts.append(size_str)
-
-        video_options.append({
-            "id": opt_id,
-            "label": f"MP4 · {r}p",
-            "meta": " · ".join(meta_parts),
-            "ext": "mp4",
-            "primary": idx == 0,
-            "recommended": idx == 0,
-            "direct_url": v["url"],
-        })
-
-    variant_urls["default"] = variants_by_res[sorted_res[0]]["url"]
 
     audio_options = [
         {
@@ -716,15 +704,53 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
         }
     ]
 
+    carousel_items = []
+    variant_urls = {}
+
+    for s_idx, slide in enumerate(x_slides):
+        v_by_res = slide["variants_by_res"]
+        sorted_res = sorted(v_by_res.keys())
+        slide_video_options = []
+        for idx, r in enumerate(sorted_res):
+            v = v_by_res[r]
+            opt_id = f"xvar_{r}" if s_idx == 0 else f"xvar_s{s_idx + 1}_{r}"
+            variant_urls[opt_id] = v["url"]
+            size_str = format_size_mb(v["size"])
+            meta_parts = [v["dim_label"]]
+            if size_str:
+                meta_parts.append(size_str)
+
+            slide_video_options.append({
+                "id": opt_id,
+                "label": f"MP4 · {r}p",
+                "meta": " · ".join(meta_parts),
+                "ext": "mp4",
+                "primary": idx == 0,
+                "recommended": idx == 0,
+                "direct_url": v["url"],
+            })
+        if s_idx == 0:
+            variant_urls["default"] = v_by_res[sorted_res[0]]["url"]
+        carousel_items.append({
+            "index": s_idx + 1,
+            "label": f"Video {s_idx + 1}",
+            "thumbnail": slide["thumbnail"],
+            "duration": slide["duration"],
+            "video_options": slide_video_options,
+            "audio_options": audio_options,
+        })
+
+    first_slide = carousel_items[0]
     return {
         "title": title,
         "description": description or title,
         "uploader": uploader,
-        "thumbnail": thumbnail,
-        "duration": duration_sec,
-        "video_options": video_options,
+        "thumbnail": first_slide["thumbnail"],
+        "duration": first_slide["duration"],
+        "video_options": first_slide["video_options"],
         "audio_options": audio_options,
         "variant_urls": variant_urls,
+        "carousel_items": carousel_items if len(carousel_items) > 1 else [],
     }
 
 
@@ -744,12 +770,12 @@ def _ig_shortcode_to_media_id(shortcode: str) -> str:
 
 async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
     """
-    Multi-layer fallback for public Instagram Reels and Posts on cloud IPs:
+    Multi-layer fallback for public Instagram Reels, Posts, and Multi-Video Carousels on cloud IPs:
     1) Public embed endpoints (/p/{shortcode}/embed/captioned/ & /reel/{shortcode}/embed/captioned/)
        with multi-escaped contextJSON decoding.
     2) 2026 Instagram Logged-Out GraphQL handshake (/api/v1/web/get_ruling_for_content/ ->
        PolarisLoggedOutDesktopWWWPostRootContentQuery doc_id=27130156389949648 &
-       PolarisPostRootQuery doc_id=27128499623469141) with v1 product schema parsing.
+       PolarisPostRootQuery doc_id=27128499623469141) with v1 product & carousel schema parsing.
     3) OpenGraph crawler fallback for direct og:video extraction.
     """
     shortcode = _extract_ig_shortcode(url)
@@ -760,8 +786,7 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
         return None
 
     media_id = _ig_shortcode_to_media_id(shortcode)
-    video_url: Optional[str] = None
-    variants_by_res: dict[int, dict] = {}
+    ig_slides: list[dict] = []
     uploader = ""
     thumbnail: Optional[str] = None
     description = "Reel de Instagram"
@@ -775,14 +800,13 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
     ]
 
     def _consume_v1_or_gql_media(media_obj: dict) -> None:
-        nonlocal video_url, uploader, thumbnail, description, duration_sec
+        nonlocal uploader, thumbnail, description, duration_sec
         if not isinstance(media_obj, dict) or not media_obj:
             return
-        # Author (v1 'user' or GraphQL 'owner')
         usr = media_obj.get("user") or media_obj.get("owner") or {}
         if isinstance(usr, dict) and usr.get("username") and not uploader:
             uploader = f"@{usr['username']}"
-        # Caption (v1 'caption.text' or GraphQL 'edge_media_to_caption')
+
         cap_obj = media_obj.get("caption")
         if isinstance(cap_obj, dict) and cap_obj.get("text"):
             description = str(cap_obj["text"]).strip()
@@ -792,51 +816,72 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
                 txt = (cap_edges[0].get("node") or {}).get("text")
                 if txt:
                     description = str(txt).strip()
-        # Thumbnail (v1 'image_versions2.candidates' or GraphQL 'display_url')
+
         if not thumbnail:
             cands = ((media_obj.get("image_versions2") or {}).get("candidates")) or []
             if cands and isinstance(cands[0], dict) and cands[0].get("url"):
                 thumbnail = cands[0]["url"]
             elif media_obj.get("display_url"):
                 thumbnail = media_obj["display_url"]
-        # Duration
+
         if media_obj.get("video_duration"):
             try:
                 duration_sec = max(1, round(float(media_obj["video_duration"])))
             except Exception:
                 pass
-        # Video versions / direct URL / carousel items
-        items_to_scan = [media_obj]
-        if isinstance(media_obj.get("carousel_media"), list):
+
+        items_to_scan = []
+        if isinstance(media_obj.get("carousel_media"), list) and media_obj["carousel_media"]:
             items_to_scan.extend(media_obj["carousel_media"])
-        sidecar_edges = ((media_obj.get("edge_sidecar_to_children") or {}).get("edges")) or []
-        for edge in sidecar_edges:
-            if isinstance(edge, dict) and isinstance(edge.get("node"), dict):
-                items_to_scan.append(edge["node"])
+        else:
+            sidecar_edges = ((media_obj.get("edge_sidecar_to_children") or {}).get("edges")) or []
+            if sidecar_edges:
+                for edge in sidecar_edges:
+                    if isinstance(edge, dict) and isinstance(edge.get("node"), dict):
+                        items_to_scan.append(edge["node"])
+            else:
+                items_to_scan.append(media_obj)
 
         for item in items_to_scan:
             if not isinstance(item, dict):
                 continue
-            if item.get("video_url") and not video_url:
-                video_url = item["video_url"]
+            slide_vurl = item.get("video_url")
+            slide_vars: dict[int, dict] = {}
             for vver in item.get("video_versions") or []:
                 if isinstance(vver, dict) and vver.get("url"):
                     w = int(vver.get("width") or 0)
                     h = int(vver.get("height") or 0)
                     short_side = min(w, h) if (w and h) else 720
-                    if short_side not in variants_by_res:
-                        variants_by_res[short_side] = {
+                    if short_side not in slide_vars:
+                        slide_vars[short_side] = {
                             "short_side": short_side,
                             "dim_label": f"{w}x{h}" if (w and h) else "Original",
                             "url": vver["url"],
                         }
-            if video_url or variants_by_res:
-                break
+            if slide_vurl or slide_vars:
+                item_thumb = thumbnail
+                icands = ((item.get("image_versions2") or {}).get("candidates")) or []
+                if icands and isinstance(icands[0], dict) and icands[0].get("url"):
+                    item_thumb = icands[0]["url"]
+                elif item.get("display_url"):
+                    item_thumb = item["display_url"]
+                item_dur = duration_sec
+                if item.get("video_duration"):
+                    try:
+                        item_dur = max(1, round(float(item["video_duration"])))
+                    except Exception:
+                        pass
+                ig_slides.append({
+                    "video_url": slide_vurl,
+                    "variants_by_res": slide_vars,
+                    "thumbnail": item_thumb,
+                    "duration": item_dur,
+                })
 
     async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
         # Layer 1: Public embed endpoints (/p/{shortcode}/embed/captioned/ & /reel/{shortcode}/embed/captioned/)
         for embed_path in (f"/p/{shortcode}/embed/captioned/", f"/reel/{shortcode}/embed/captioned/"):
-            if video_url or variants_by_res:
+            if ig_slides:
                 break
             try:
                 embed_url = f"https://www.instagram.com{embed_path}"
@@ -859,14 +904,6 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
                 )
                 if lsd_m:
                     lsd_token = lsd_m.group(1)
-
-                for pat in v_patterns:
-                    vm = re.search(pat, html_text)
-                    if vm:
-                        candidate = _decode_fb_escaped_url(vm.group(1))
-                        if candidate.startswith("http"):
-                            video_url = candidate
-                            break
 
                 if not uploader:
                     um = re.search(r'\\*"username\\*"\s*:\s*\\*"([^"\\]+)\\*"', html_text)
@@ -905,11 +942,33 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
                         duration_sec = max(1, round(float(dur_m.group(1))))
                     except Exception:
                         pass
+
+                # Find all unique video_urls in embed HTML (supports multi-video carousels in contextJSON)
+                found_vurls = []
+                for raw_v in re.findall(r'\\*"video_url\\*"\s*:\s*\\*"(https?:[^"\s]+?)\\*"', html_text):
+                    cand = _decode_fb_escaped_url(raw_v)
+                    if cand.startswith("http") and cand not in found_vurls:
+                        found_vurls.append(cand)
+                if not found_vurls:
+                    for pat in v_patterns[1:]:
+                        vm = re.search(pat, html_text)
+                        if vm:
+                            cand = _decode_fb_escaped_url(vm.group(1))
+                            if cand.startswith("http"):
+                                found_vurls.append(cand)
+                                break
+                for fv in found_vurls:
+                    ig_slides.append({
+                        "video_url": fv,
+                        "variants_by_res": {},
+                        "thumbnail": thumbnail,
+                        "duration": duration_sec,
+                    })
             except Exception:
                 continue
 
         # Layer 2: 2026 Instagram Logged-Out GraphQL Handshake
-        if not video_url and not variants_by_res:
+        if not ig_slides:
             api_base_headers = {
                 "User-Agent": DEFAULT_UA,
                 "X-IG-App-ID": "936619743392459",
@@ -919,7 +978,6 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
                 "Accept": "*/*",
                 "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
             }
-            # Step 2a: Call get_ruling_for_content to grant csrftoken cookie (matching yt-dlp 2026.10.26)
             try:
                 await client.get(
                     "https://www.instagram.com/api/v1/web/get_ruling_for_content/",
@@ -966,7 +1024,7 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
             ]
 
             for endpoint_url, friendly_name, doc_id, variables_str in gql_queries:
-                if video_url or variants_by_res:
+                if ig_slides:
                     break
                 try:
                     gql_headers = {
@@ -994,34 +1052,38 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
                         try:
                             g_json = g_resp.json()
                             data_root = g_json.get("data") or {}
-                            # Check 2026 xig_polaris_media.if_not_gated_logged_out
                             polaris = data_root.get("xig_polaris_media") or {}
                             if isinstance(polaris, dict):
                                 _consume_v1_or_gql_media(polaris.get("if_not_gated_logged_out") or polaris)
-                            # Check 2026 xdt_api__v1__media__shortcode__web_info.items[0]
-                            web_info = data_root.get("xdt_api__v1__media__shortcode__web_info") or {}
-                            if isinstance(web_info, dict) and isinstance(web_info.get("items"), list) and web_info["items"]:
-                                _consume_v1_or_gql_media(web_info["items"][0])
-                            # Check legacy xdt_shortcode_media / shortcode_media
-                            legacy_media = data_root.get("xdt_shortcode_media") or data_root.get("shortcode_media")
-                            if isinstance(legacy_media, dict):
-                                _consume_v1_or_gql_media(legacy_media)
+                            if not ig_slides:
+                                web_info = data_root.get("xdt_api__v1__media__shortcode__web_info") or {}
+                                if isinstance(web_info, dict) and isinstance(web_info.get("items"), list) and web_info["items"]:
+                                    _consume_v1_or_gql_media(web_info["items"][0])
+                            if not ig_slides:
+                                legacy_media = data_root.get("xdt_shortcode_media") or data_root.get("shortcode_media")
+                                if isinstance(legacy_media, dict):
+                                    _consume_v1_or_gql_media(legacy_media)
                         except Exception:
                             pass
 
-                        if not video_url and not variants_by_res:
+                        if not ig_slides:
                             for pat in v_patterns:
                                 vm = re.search(pat, g_text)
                                 if vm:
                                     candidate = _decode_fb_escaped_url(vm.group(1))
                                     if candidate.startswith("http"):
-                                        video_url = candidate
+                                        ig_slides.append({
+                                            "video_url": candidate,
+                                            "variants_by_res": {},
+                                            "thumbnail": thumbnail,
+                                            "duration": duration_sec,
+                                        })
                                         break
                 except Exception:
                     continue
 
         # Layer 3: Social Crawler OpenGraph fallback
-        if not video_url and not variants_by_res:
+        if not ig_slides:
             for bot_ua in ("TelegramBot (like TwitterBot)", FB_CRAWLER_UA):
                 try:
                     c_resp = await client.get(
@@ -1029,14 +1091,15 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
                         headers={"User-Agent": bot_ua},
                     )
                     c_html = c_resp.text or ""
+                    found_og_vurl = None
                     for pat in v_patterns:
                         vm = re.search(pat, c_html)
                         if vm:
                             candidate = _decode_fb_escaped_url(vm.group(1))
                             if candidate.startswith("http"):
-                                video_url = candidate
+                                found_og_vurl = candidate
                                 break
-                    if video_url:
+                    if found_og_vurl:
                         if not thumbnail:
                             og_img = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', c_html, re.I)
                             if og_img:
@@ -1045,44 +1108,18 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
                             og_desc = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']', c_html, re.I)
                             if og_desc:
                                 description = html_lib.unescape(og_desc.group(1)).strip()
+                        ig_slides.append({
+                            "video_url": found_og_vurl,
+                            "variants_by_res": {},
+                            "thumbnail": thumbnail,
+                            "duration": duration_sec,
+                        })
                         break
                 except Exception:
                     continue
 
-    if not video_url and not variants_by_res:
+    if not ig_slides:
         return None
-
-    video_options = []
-    variant_urls = {}
-
-    if variants_by_res:
-        sorted_res = sorted(variants_by_res.keys())
-        for idx, r in enumerate(sorted_res):
-            v = variants_by_res[r]
-            opt_id = f"igvar_{r}"
-            variant_urls[opt_id] = v["url"]
-            video_options.append({
-                "id": opt_id,
-                "label": f"MP4 · {r}p",
-                "meta": f"{v['dim_label']} · Alojado en Instagram",
-                "ext": "mp4",
-                "primary": idx == 0,
-                "recommended": idx == 0,
-                "direct_url": v["url"],
-            })
-        variant_urls["default"] = variants_by_res[sorted_res[-1]]["url"]
-    elif video_url:
-        variant_urls["igvar_orig"] = video_url
-        variant_urls["default"] = video_url
-        video_options.append({
-            "id": "igvar_orig",
-            "label": "MP4 · Calidad original",
-            "meta": "Original · Alojado en Instagram",
-            "ext": "mp4",
-            "primary": True,
-            "recommended": True,
-            "direct_url": video_url,
-        })
 
     audio_options = [
         {
@@ -1094,15 +1131,66 @@ async def fetch_instagram_embed_fallback(url: str) -> Optional[dict]:
             "recommended": False,
         }
     ]
+
+    carousel_items = []
+    variant_urls = {}
+
+    for s_idx, slide in enumerate(ig_slides):
+        v_by_res = slide["variants_by_res"]
+        s_vurl = slide["video_url"]
+        slide_video_options = []
+        if v_by_res:
+            sorted_res = sorted(v_by_res.keys())
+            for idx, r in enumerate(sorted_res):
+                v = v_by_res[r]
+                opt_id = f"igvar_{r}" if s_idx == 0 else f"igvar_s{s_idx + 1}_{r}"
+                variant_urls[opt_id] = v["url"]
+                slide_video_options.append({
+                    "id": opt_id,
+                    "label": f"MP4 · {r}p",
+                    "meta": f"{v['dim_label']} · Alojado en Instagram",
+                    "ext": "mp4",
+                    "primary": idx == 0,
+                    "recommended": idx == 0,
+                    "direct_url": v["url"],
+                })
+            if s_idx == 0:
+                variant_urls["default"] = v_by_res[sorted_res[-1]]["url"]
+        elif s_vurl:
+            opt_id = "igvar_orig" if s_idx == 0 else f"igvar_s{s_idx + 1}_orig"
+            variant_urls[opt_id] = s_vurl
+            if s_idx == 0:
+                variant_urls["default"] = s_vurl
+            slide_video_options.append({
+                "id": opt_id,
+                "label": "MP4 · Calidad original",
+                "meta": "Original · Alojado en Instagram",
+                "ext": "mp4",
+                "primary": True,
+                "recommended": True,
+                "direct_url": s_vurl,
+            })
+
+        carousel_items.append({
+            "index": s_idx + 1,
+            "label": f"Video {s_idx + 1}",
+            "thumbnail": slide["thumbnail"] or thumbnail,
+            "duration": slide["duration"] or duration_sec,
+            "video_options": slide_video_options,
+            "audio_options": audio_options,
+        })
+
+    first_slide = carousel_items[0]
     return {
         "title": description,
         "description": description,
         "uploader": uploader,
-        "thumbnail": thumbnail,
-        "duration": duration_sec,
-        "video_options": video_options,
+        "thumbnail": first_slide["thumbnail"],
+        "duration": first_slide["duration"],
+        "video_options": first_slide["video_options"],
         "audio_options": audio_options,
         "variant_urls": variant_urls,
+        "carousel_items": carousel_items if len(carousel_items) > 1 else [],
     }
 
 
@@ -1404,7 +1492,7 @@ async def extract_video_info(payload: UrlRequest):
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
-        "noplaylist": True,
+        "noplaylist": platform == "youtube",
         "skip_download": True,
         "socket_timeout": 12,
         "http_headers": {"User-Agent": DEFAULT_UA},
@@ -1413,8 +1501,42 @@ async def extract_video_info(payload: UrlRequest):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(target_url, download=False)
+            carousel_items: List[Dict[str, Any]] = []
+
             if "entries" in info and info["entries"]:
-                info = info["entries"][0]
+                raw_entries = [e for e in info["entries"] if isinstance(e, dict)]
+                video_entries = [
+                    e for e in raw_entries
+                    if (e.get("formats") or e.get("url")) and e.get("ext") not in ("jpg", "jpeg", "png", "webp")
+                ]
+                if not video_entries and raw_entries:
+                    video_entries = [raw_entries[0]]
+
+                if len(video_entries) > 1:
+                    for idx, entry in enumerate(video_entries):
+                        v_opts, a_opts = build_exact_blocks_from_info(entry)
+                        e_thumb = entry.get("thumbnail")
+                        if not e_thumb and entry.get("thumbnails"):
+                            e_thumbs = [t.get("url") for t in entry["thumbnails"] if t.get("url")]
+                            if e_thumbs:
+                                e_thumb = e_thumbs[-1]
+                        carousel_items.append({
+                            "index": idx,
+                            "label": f"Video {idx + 1}",
+                            "thumbnail": e_thumb,
+                            "duration": entry.get("duration") or 15,
+                            "video_options": v_opts,
+                            "audio_options": a_opts,
+                        })
+
+                if video_entries:
+                    parent_desc = (info.get("description") or info.get("title") or "").strip()
+                    parent_uploader = info.get("uploader") or info.get("channel") or info.get("uploader_id") or ""
+                    info = video_entries[0]
+                    if parent_desc and not info.get("description"):
+                        info["description"] = parent_desc
+                    if parent_uploader and not (info.get("uploader") or info.get("channel") or info.get("uploader_id")):
+                        info["uploader"] = parent_uploader
 
             video_options, audio_options = build_exact_blocks_from_info(info)
             raw_desc = (info.get("description") or "").strip()
@@ -1448,6 +1570,7 @@ async def extract_video_info(payload: UrlRequest):
                 "video_options": video_options,
                 "audio_options": audio_options,
                 "options": video_options + audio_options,
+                "carousel_items": carousel_items,
             }
     except Exception as exc:
         # Fallback for Facebook using direct SD/HD streams extracted via crawler/embed plugin
@@ -1497,6 +1620,7 @@ async def extract_video_info(payload: UrlRequest):
                 "video_options": video_options,
                 "audio_options": audio_options,
                 "options": video_options + audio_options,
+                "carousel_items": [],
             }
 
         # Fallback for X/Twitter
@@ -1515,6 +1639,7 @@ async def extract_video_info(payload: UrlRequest):
                     "video_options": x_data["video_options"],
                     "audio_options": x_data["audio_options"],
                     "options": x_data["video_options"] + x_data["audio_options"],
+                    "carousel_items": x_data.get("carousel_items", []),
                 }
 
         # Fallback for Instagram using public embed page
@@ -1533,6 +1658,7 @@ async def extract_video_info(payload: UrlRequest):
                     "video_options": ig_data["video_options"],
                     "audio_options": ig_data["audio_options"],
                     "options": ig_data["video_options"] + ig_data["audio_options"],
+                    "carousel_items": ig_data.get("carousel_items", []),
                 }
 
         # Fallback for TikTok using web rehydration JSON

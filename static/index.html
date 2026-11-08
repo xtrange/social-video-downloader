@@ -18,7 +18,17 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/index.css?v=4.0" />
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('ddx_theme');
+        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var theme = (saved === 'dark' || saved === 'light') ? saved : (prefersDark ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (_) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/index.css?v=5.0" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -28,7 +38,7 @@
     "url": "https://ddx.cl/",
     "applicationCategory": "MultimediaApplication",
     "operatingSystem": "All",
-    "inLanguage": "es-CL",
+    "inLanguage": "es_CL",
     "description": "Herramienta web gratuita en Chile para bajar videos y Reels de Instagram, TikTok sin marca de agua, Facebook, X, Pinterest, Threads, LinkedIn y Reddit con solo pegar el enlace.",
     "offers": {
       "@type": "Offer",
@@ -43,8 +53,13 @@
     <section class="card" aria-label="Descargador de video DDX">
       <header class="card-header">
         <div class="brand-row">
-          <span class="brand-badge">ddx.cl</span>
-          <h1>Descargar video</h1>
+          <div class="brand-left">
+            <span class="brand-badge">ddx.cl</span>
+            <h1>Descargar video</h1>
+          </div>
+          <button type="button" id="theme-toggle-btn" class="theme-toggle-btn" title="Cambiar modo oscuro / claro" aria-label="Cambiar modo oscuro o claro">
+            <span id="theme-icon" aria-hidden="true">☾</span>
+          </button>
         </div>
         <p>Pega el enlace del post. Identificaremos la fuente y las opciones de descarga automáticamente.</p>
       </header>
@@ -76,6 +91,9 @@
       </div>
 
       <div id="result-box" class="result hidden" aria-live="polite">
+        <!-- Mejora 8: Selector de videos en publicaciones de tipo Carrusel (2 o más videos) -->
+        <div id="carousel-tabs" class="carousel-tabs hidden" role="tablist" aria-label="Videos en esta publicación"></div>
+
         <!-- Resumen del video con screenshot interactivo (mini-player), descarga de portada y descripción expandible -->
         <div class="media-summary">
           <div class="thumb-wrap" id="thumb-wrap" title="Haz clic para reproducir vista previa">
@@ -127,6 +145,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=4.0"></script>
+  <script src="/static/app.js?v=5.0"></script>
 </body>
 </html>
