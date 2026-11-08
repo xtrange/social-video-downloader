@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/index.css?v=3.2" />
+  <link rel="stylesheet" href="/static/index.css?v=3.4" />
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -72,12 +72,27 @@
       </div>
 
       <div id="result-box" class="result hidden" aria-live="polite">
-        <div class="result-header">
-          <div class="result-meta">
-            <span id="source-badge" class="source-badge">Fuente</span>
-            <span id="video-title" class="video-title"></span>
+        <!-- Resumen del video con screenshot pequeño y descripción extendida -->
+        <div class="media-summary">
+          <div class="thumb-wrap" id="thumb-wrap">
+            <img id="video-thumb" class="video-thumb hidden" alt="Vista previa del video" referrerpolicy="no-referrer" />
+            <div id="thumb-placeholder" class="thumb-placeholder" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+              </svg>
+            </div>
           </div>
-          <span id="video-duration" class="video-duration"></span>
+
+          <div class="media-info">
+            <div class="result-header">
+              <div class="result-meta">
+                <span id="source-badge" class="source-badge">Fuente</span>
+                <span id="video-uploader" class="video-uploader"></span>
+              </div>
+              <span id="video-duration" class="video-duration"></span>
+            </div>
+            <p id="video-title" class="video-description"></p>
+          </div>
         </div>
 
         <!-- Bloque 1: Videos de menor a mayor resolución -->
@@ -95,6 +110,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=3.2"></script>
+  <script src="/static/app.js?v=3.4"></script>
 </body>
 </html>

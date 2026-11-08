@@ -281,7 +281,10 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
     user, status_id = m.group(1), m.group(2)
 
     variants_by_res: dict[int, dict] = {}
-    title = f"Video de @{user} en X"
+    title = f"Publicación de @{user} en X"
+    description = ""
+    uploader = f"@{user}"
+    thumbnail = None
     duration_sec = 15
 
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
@@ -292,9 +295,15 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
             if resp.status_code == 200:
                 sdata = resp.json()
                 if sdata.get("text"):
-                    title = sdata["text"]
+                    description = sdata["text"].strip()
+                    title = description
+                usr_obj = sdata.get("user") or {}
+                if usr_obj.get("screen_name"):
+                    uploader = f"@{usr_obj['screen_name']}"
                 media_details = sdata.get("mediaDetails") or []
                 for md in media_details:
+                    if md.get("media_url_https") and not thumbnail:
+                        thumbnail = md["media_url_https"]
                     vinfo = md.get("video_info") or {}
                     dur_ms = vinfo.get("duration_millis")
                     if dur_ms:
@@ -303,7 +312,6 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
                         if var.get("content_type") == "video/mp4" and var.get("url"):
                             vurl = var["url"]
                             bitrate = int(var.get("bitrate") or 0)
-                            # Parse resolution from URL path /vid/avc1/480x852/... or /vid/720x1280/...
                             rm = re.search(r"/(\d+)x(\d+)/", vurl)
                             if rm:
                                 w, h = int(rm.group(1)), int(rm.group(2))
@@ -334,9 +342,14 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
                 if resp.status_code == 200:
                     vdata = resp.json()
                     if vdata.get("text"):
-                        title = vdata["text"]
+                        description = vdata["text"].strip()
+                        title = description
+                    if vdata.get("user_screen_name"):
+                        uploader = f"@{vdata['user_screen_name']}"
                     for m_item in vdata.get("media_extended") or []:
                         if m_item.get("type") in ("video", "gif") and m_item.get("url"):
+                            if m_item.get("thumbnail_url") and not thumbnail:
+                                thumbnail = m_item["thumbnail_url"]
                             dur_ms = m_item.get("duration_millis") or 15000
                             duration_sec = max(1, round(dur_ms / 1000))
                             sz = m_item.get("size") or {}
@@ -380,7 +393,6 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
             "recommended": idx == 0,
         })
 
-    # Also store the lightest and highest URLs for audio extraction
     variant_urls["default"] = variants_by_res[sorted_res[0]]["url"]
 
     audio_options = [
@@ -396,6 +408,9 @@ async def fetch_x_real_variants(url: str) -> Optional[dict]:
 
     return {
         "title": title,
+        "description": description or title,
+        "uploader": uploader,
+        "thumbnail": thumbnail,
         "duration": duration_sec,
         "video_options": video_options,
         "audio_options": audio_options,
@@ -409,6 +424,25 @@ async def index():
         str(STATIC_DIR / "index.html"),
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
+
+
+@app.get("/api/thumbnail")
+async def proxy_thumbnail(url: str = Query(...)):
+    """Proxies remote social media thumbnail images so Instagram/FB/TikTok/X CORP headers never block the screenshot."""
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Invalid thumbnail URL")
+    try:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": DEFAULT_UA})
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "image/jpeg")
+            return Response(
+                content=resp.content,
+                media_type=content_type,
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+    except Exception:
+        raise HTTPException(status_code=404, detail="Thumbnail unavailable")
 
 
 @app.post("/api/info")
@@ -442,11 +476,32 @@ async def extract_video_info(payload: UrlRequest):
                 info = info["entries"][0]
 
             video_options, audio_options = build_exact_blocks_from_info(info)
+            raw_desc = (info.get("description") or "").strip()
+            raw_title = (info.get("title") or "").strip()
+            # Combine or pick the richest text description available
+            if raw_desc and len(raw_desc) > len(raw_title):
+                full_description = raw_desc
+            else:
+                full_description = raw_title or raw_desc or f"Video de {source_label}"
+
+            uploader = info.get("uploader") or info.get("channel") or info.get("uploader_id") or ""
+            if uploader and not str(uploader).startswith("@"):
+                uploader = f"@{uploader}"
+
+            thumb = info.get("thumbnail")
+            if not thumb and info.get("thumbnails"):
+                thumbs = [t.get("url") for t in info["thumbnails"] if t.get("url")]
+                if thumbs:
+                    thumb = thumbs[-1]
+
             return {
                 "original_url": url,
                 "platform": platform,
                 "source_label": source_label,
-                "title": info.get("title") or info.get("description") or f"Video de {source_label}",
+                "title": full_description,
+                "description": full_description,
+                "uploader": uploader,
+                "thumbnail": thumb,
                 "duration": info.get("duration") or 15,
                 "video_options": video_options,
                 "audio_options": audio_options,
@@ -460,7 +515,10 @@ async def extract_video_info(payload: UrlRequest):
                     "original_url": url,
                     "platform": "x",
                     "source_label": source_label,
-                    "title": x_data["title"],
+                    "title": x_data["description"],
+                    "description": x_data["description"],
+                    "uploader": x_data["uploader"],
+                    "thumbnail": x_data["thumbnail"],
                     "duration": x_data["duration"],
                     "video_options": x_data["video_options"],
                     "audio_options": x_data["audio_options"],

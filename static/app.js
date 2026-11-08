@@ -10,8 +10,11 @@
   const loadingBox = document.getElementById('loading-box');
   const resultBox = document.getElementById('result-box');
   const sourceBadge = document.getElementById('source-badge');
+  const videoUploader = document.getElementById('video-uploader');
   const videoTitle = document.getElementById('video-title');
   const videoDuration = document.getElementById('video-duration');
+  const videoThumb = document.getElementById('video-thumb');
+  const thumbPlaceholder = document.getElementById('thumb-placeholder');
   const videoOptionsList = document.getElementById('video-options-list');
   const audioOptionsList = document.getElementById('audio-options-list');
 
@@ -167,10 +170,34 @@
     return row;
   }
 
+  function updateThumbnail(thumbUrl) {
+    if (!videoThumb || !thumbPlaceholder) return;
+    if (thumbUrl) {
+      const proxied = `/api/thumbnail?url=${encodeURIComponent(thumbUrl)}`;
+      videoThumb.onload = () => {
+        videoThumb.classList.remove('hidden');
+        thumbPlaceholder.classList.add('hidden');
+      };
+      videoThumb.onerror = () => {
+        videoThumb.classList.add('hidden');
+        thumbPlaceholder.classList.remove('hidden');
+      };
+      videoThumb.src = proxied;
+    } else {
+      videoThumb.src = '';
+      videoThumb.classList.add('hidden');
+      thumbPlaceholder.classList.remove('hidden');
+    }
+  }
+
   function renderOptions(data) {
     sourceBadge.textContent = data.source_label || data.platform;
-    videoTitle.textContent = data.title || '';
+    if (videoUploader) {
+      videoUploader.textContent = data.uploader || '';
+    }
+    videoTitle.textContent = data.description || data.title || '';
     videoDuration.textContent = formatDuration(data.duration);
+    updateThumbnail(data.thumbnail);
 
     const videoList = data.video_options || (data.options || []).filter((o) => o.id !== 'audio');
     const audioList = data.audio_options || (data.options || []).filter((o) => o.id === 'audio');
@@ -180,23 +207,6 @@
       audioOptionsList.innerHTML = '';
       videoList.forEach((opt) => videoOptionsList.appendChild(createOptionRow(opt, data)));
       audioList.forEach((opt) => audioOptionsList.appendChild(createOptionRow(opt, data)));
-    } else {
-      const legacyContainer = document.getElementById('options-list');
-      if (legacyContainer) {
-        legacyContainer.innerHTML = '';
-        const b1 = document.createElement('div');
-        b1.className = 'options-block';
-        b1.innerHTML = '<div class="block-title">1. Video (de menor a mayor resolución)</div><div class="options-list"></div>';
-        videoList.forEach((opt) => b1.querySelector('.options-list').appendChild(createOptionRow(opt, data)));
-
-        const b2 = document.createElement('div');
-        b2.className = 'options-block';
-        b2.innerHTML = '<div class="block-title">2. Solo audio</div><div class="options-list"></div>';
-        audioList.forEach((opt) => b2.querySelector('.options-list').appendChild(createOptionRow(opt, data)));
-
-        legacyContainer.appendChild(b1);
-        legacyContainer.appendChild(b2);
-      }
     }
 
     resultBox.classList.remove('hidden');
