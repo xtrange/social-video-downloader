@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import unicodedata
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
@@ -1811,26 +1811,130 @@ async def try_stream_cdn_url(cdn_url: str, filename: str) -> Optional[StreamingR
         return None
 
 
+SITE_URL = "https://ddx.cl"
+
+# slug -> (nombre, ejemplo de URL, texto descriptivo, contenido específico del FAQ)
+SEO_PLATFORMS: Dict[str, Dict[str, str]] = {
+    "instagram": {"name": "Instagram", "example": "https://www.instagram.com/reel/...", "what": "Reels, videos y carruseles de publicaciones públicas de Instagram"},
+    "tiktok": {"name": "TikTok", "example": "https://www.tiktok.com/@usuario/video/...", "what": "videos de TikTok sin marca de agua"},
+    "facebook": {"name": "Facebook", "example": "https://www.facebook.com/watch/?v=...", "what": "videos y Reels públicos de Facebook en calidad SD y HD"},
+    "x": {"name": "X (Twitter)", "example": "https://x.com/usuario/status/...", "what": "videos y GIFs de publicaciones de X (antes Twitter)"},
+    "pinterest": {"name": "Pinterest", "example": "https://www.pinterest.com/pin/...", "what": "videos de pines de Pinterest"},
+    "threads": {"name": "Threads", "example": "https://www.threads.net/@usuario/post/...", "what": "videos de publicaciones de Threads"},
+    "linkedin": {"name": "LinkedIn", "example": "https://www.linkedin.com/posts/...", "what": "videos públicos de publicaciones de LinkedIn"},
+    "reddit": {"name": "Reddit", "example": "https://www.reddit.com/r/.../comments/...", "what": "videos de Reddit con audio incluido"},
+    "youtube": {"name": "YouTube", "example": "https://www.youtube.com/watch?v=...", "what": "videos, Shorts y audio de YouTube"},
+    "twitch": {"name": "Twitch", "example": "https://clips.twitch.tv/...", "what": "clips y videos de Twitch"},
+    "kick": {"name": "Kick", "example": "https://kick.com/.../clips/...", "what": "clips de Kick"},
+    "vimeo": {"name": "Vimeo", "example": "https://vimeo.com/...", "what": "videos públicos de Vimeo"},
+    "bluesky": {"name": "Bluesky", "example": "https://bsky.app/profile/.../post/...", "what": "videos de publicaciones de Bluesky"},
+}
+
+
+def _esc(text: str) -> str:
+    return html_lib.escape(text, quote=True)
+
+
+def render_seo_page(slug: str) -> Optional[str]:
+    """Renderiza index.html con title, meta, canonical, H1, JSON-LD y FAQ específicos de la plataforma."""
+    p = SEO_PLATFORMS.get(slug)
+    if not p:
+        return None
+    name, what, example = p["name"], p["what"], p["example"]
+    url = f"{SITE_URL}/bajar-video-{slug}"
+    title = f"Bajar videos de {name} gratis — DDX.cl"
+    desc = f"Descarga {what} en MP4 o MP3 con solo pegar el enlace. Gratis, sin registro y sin instalar nada. DDX.cl"
+
+    page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    page = re.sub(r"<title>.*?</title>", f"<title>{_esc(title)}</title>", page, count=1, flags=re.S)
+    page = re.sub(r'(<meta name="description" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(desc)}{m.group(2)}", page, count=1)
+    page = page.replace('<link rel="canonical" href="https://ddx.cl/" />', f'<link rel="canonical" href="{url}" />')
+    page = re.sub(r'(<meta property="og:title" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(title)}{m.group(2)}", page, count=1)
+    page = re.sub(r'(<meta property="og:description" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(desc)}{m.group(2)}", page, count=1)
+    page = page.replace('<meta property="og:url" content="https://ddx.cl/" />', f'<meta property="og:url" content="{url}" />')
+    page = page.replace("<h1>Descargar video</h1>", f"<h1>Bajar video de {_esc(name)}</h1>")
+    page = page.replace('placeholder="https://..."', f'placeholder="{_esc(example)}"')
+
+    faqs = [
+        (f"¿Cómo descargo un video de {name}?", f"Copia el enlace de la publicación en {name}, pégalo en el campo de arriba y elige la calidad. El archivo se guarda en tu dispositivo."),
+        (f"¿Puedo descargar {what}?", f"Sí. DDX.cl permite bajar {what}. Solo funciona con contenido público."),
+        ("¿Es gratis y necesito registrarme?", "Es gratis, sin registro y sin instalar aplicaciones. Funciona en celular y computador."),
+        ("¿Puedo bajar solo el audio?", "Sí, cada video incluye la opción de descargar solo el audio en MP3."),
+    ]
+    faq_html = "".join(f"<h3>{_esc(q)}</h3><p>{_esc(a)}</p>" for q, a in faqs)
+    seo_block = (
+        f'<section class="seo-copy" aria-label="Información sobre {_esc(name)}">'
+        f"<h2>Descargar videos de {_esc(name)}</h2>"
+        f"<p>Con DDX.cl puedes bajar {_esc(what)} pegando el enlace del post. "
+        f"Detecta la fuente automáticamente y te muestra las calidades disponibles.</p>"
+        f"{faq_html}</section>"
+    )
+    page = page.replace("</main>", f"{seo_block}\n  </main>", 1)
+
+    ld = {
+        "@context": "https://schema.org",
+        "@graph": [
+            {
+                "@type": "WebApplication",
+                "name": f"DDX.cl — Bajar videos de {name}",
+                "url": url,
+                "applicationCategory": "MultimediaApplication",
+                "operatingSystem": "All",
+                "inLanguage": "es-CL",
+                "description": desc,
+                "offers": {"@type": "Offer", "price": "0", "priceCurrency": "CLP"},
+            },
+            {
+                "@type": "FAQPage",
+                "mainEntity": [
+                    {"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}}
+                    for q, a in faqs
+                ],
+            },
+            {
+                "@type": "BreadcrumbList",
+                "itemListElement": [
+                    {"@type": "ListItem", "position": 1, "name": "DDX.cl", "item": SITE_URL + "/"},
+                    {"@type": "ListItem", "position": 2, "name": f"Bajar video de {name}", "item": url},
+                ],
+            },
+        ],
+    }
+    page = re.sub(
+        r'<script type="application/ld\+json">.*?</script>',
+        lambda m: '<script type="application/ld+json">' + json.dumps(ld, ensure_ascii=False) + "</script>",
+        page,
+        count=1,
+        flags=re.S,
+    )
+    return page
+
+
+@app.get("/bajar-video-{slug}")
+async def seo_platform_page(slug: str):
+    page = render_seo_page(slug)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Página no encontrada")
+    return Response(
+        content=page,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400"},
+    )
+
+
 @app.get("/robots.txt")
 async def robots_txt():
-    content = "User-agent: *\nAllow: /\nSitemap: https://ddx.cl/sitemap.xml\n"
+    content = "User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: https://ddx.cl/sitemap.xml\n"
     return PlainTextResponse(content)
 
 
 @app.get("/sitemap.xml")
 async def sitemap_xml():
-    urls = [
-        "https://ddx.cl/",
-        "https://ddx.cl/bajar-video-instagram",
-        "https://ddx.cl/bajar-video-tiktok",
-        "https://ddx.cl/bajar-video-facebook",
-        "https://ddx.cl/bajar-video-x",
-        "https://ddx.cl/bajar-video-pinterest",
-        "https://ddx.cl/bajar-video-threads",
-        "https://ddx.cl/bajar-video-linkedin",
-        "https://ddx.cl/bajar-video-reddit",
-    ]
-    items = "".join(f"<url><loc>{u}</loc><changefreq>weekly</changefreq><priority>0.9</priority></url>" for u in urls)
+    urls = [(f"{SITE_URL}/", "1.0")] + [(f"{SITE_URL}/bajar-video-{s}", "0.8") for s in SEO_PLATFORMS]
+    items = "".join(
+        f"<url><loc>{u}</loc><changefreq>weekly</changefreq><priority>{pr}</priority></url>" for u, pr in urls
+    )
     xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</urlset>'
     return Response(content=xml, media_type="application/xml")
 

@@ -3,7 +3,10 @@
   "builds": [
     {
       "src": "app.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "includeFiles": "static/**"
+      }
     },
     {
       "src": "static/**",
@@ -17,6 +20,10 @@
     },
     {
       "src": "/(robots\\.txt|sitemap\\.xml)",
+      "dest": "app.py"
+    },
+    {
+      "src": "/bajar-video-([a-z0-9-]+)",
       "dest": "app.py"
     },
     {

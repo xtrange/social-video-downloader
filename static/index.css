@@ -651,3 +651,23 @@ body {
     height: 184px;
   }
 }
+
+.seo-copy {
+  margin-top: 1.5rem;
+  padding: 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.seo-copy h2 {
+  font-size: 0.95rem;
+  color: var(--text);
+  margin-bottom: 0.4rem;
+}
+
+.seo-copy h3 {
+  font-size: 0.82rem;
+  color: var(--text);
+  margin: 0.8rem 0 0.15rem;
+}
