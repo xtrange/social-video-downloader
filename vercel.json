@@ -23,7 +23,7 @@
       "dest": "app.py"
     },
     {
-      "src": "/bajar-video-([a-z0-9-]+)",
+      "src": "/(bajar-video|bajar-mp3)-([a-z0-9-]+)",
       "dest": "app.py"
     },
     {

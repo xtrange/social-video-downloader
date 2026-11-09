@@ -1835,15 +1835,20 @@ def _esc(text: str) -> str:
     return html_lib.escape(text, quote=True)
 
 
-def render_seo_page(slug: str) -> Optional[str]:
+def render_seo_page(slug: str, mode: str = "video") -> Optional[str]:
     """Renderiza index.html con title, meta, canonical, H1, JSON-LD y FAQ específicos de la plataforma."""
     p = SEO_PLATFORMS.get(slug)
     if not p:
         return None
     name, what, example = p["name"], p["what"], p["example"]
-    url = f"{SITE_URL}/bajar-video-{slug}"
-    title = f"Bajar videos de {name} gratis — DDX.cl"
-    desc = f"Descarga {what} en MP4 o MP3 con solo pegar el enlace. Gratis, sin registro y sin instalar nada. DDX.cl"
+    is_mp3 = mode == "mp3"
+    url = f"{SITE_URL}/{'bajar-mp3' if is_mp3 else 'bajar-video'}-{slug}"
+    if is_mp3:
+        title = f"Bajar MP3 de {name} gratis — Extraer audio — DDX.cl"
+        desc = f"Convierte y descarga el audio en MP3 de {name} con solo pegar el enlace. Gratis, sin registro y sin instalar nada. DDX.cl"
+    else:
+        title = f"Bajar videos de {name} gratis — DDX.cl"
+        desc = f"Descarga {what} en MP4 o MP3 con solo pegar el enlace. Gratis, sin registro y sin instalar nada. DDX.cl"
 
     page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
@@ -1853,10 +1858,19 @@ def render_seo_page(slug: str) -> Optional[str]:
     page = re.sub(r'(<meta property="og:title" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(title)}{m.group(2)}", page, count=1)
     page = re.sub(r'(<meta property="og:description" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(desc)}{m.group(2)}", page, count=1)
     page = page.replace('<meta property="og:url" content="https://ddx.cl/" />', f'<meta property="og:url" content="{url}" />')
-    page = page.replace("<h1>Descargar video</h1>", f"<h1>Bajar video de {_esc(name)}</h1>")
+    h1_text = f"Bajar MP3 de {name}" if is_mp3 else f"Bajar video de {name}"
+    page = page.replace("<h1>Descargar video</h1>", f"<h1>{_esc(h1_text)}</h1>")
     page = page.replace('placeholder="https://..."', f'placeholder="{_esc(example)}"')
 
-    faqs = [
+    if is_mp3:
+        faqs = [
+            (f"¿Cómo bajo el audio en MP3 de {name}?", f"Copia el enlace de la publicación en {name}, pégalo arriba y pulsa Descargar en la opción «Solo audio» (MP3)."),
+            (f"¿Puedo extraer la música o el sonido de un video de {name}?", f"Sí. DDX.cl extrae la pista de audio de {what} y la entrega como archivo MP3. Solo funciona con contenido público."),
+            ("¿Es gratis y necesito registrarme?", "Es gratis, sin registro y sin instalar aplicaciones. Funciona en celular y computador."),
+            ("¿Qué calidad tiene el MP3?", "Se entrega a 128 kbps, extraído directamente del audio original del video."),
+        ]
+    else:
+      faqs = [
         (f"¿Cómo descargo un video de {name}?", f"Copia el enlace de la publicación en {name}, pégalo en el campo de arriba y elige la calidad. El archivo se guarda en tu dispositivo."),
         (f"¿Puedo descargar {what}?", f"Sí. DDX.cl permite bajar {what}. Solo funciona con contenido público."),
         ("¿Es gratis y necesito registrarme?", "Es gratis, sin registro y sin instalar aplicaciones. Funciona en celular y computador."),
@@ -1865,9 +1879,14 @@ def render_seo_page(slug: str) -> Optional[str]:
     faq_html = "".join(f"<h3>{_esc(q)}</h3><p>{_esc(a)}</p>" for q, a in faqs)
     seo_block = (
         f'<section class="seo-copy" aria-label="Información sobre {_esc(name)}">'
-        f"<h2>Descargar videos de {_esc(name)}</h2>"
-        f"<p>Con DDX.cl puedes bajar {_esc(what)} pegando el enlace del post. "
-        f"Detecta la fuente automáticamente y te muestra las calidades disponibles.</p>"
+        f"<h2>{'Extraer audio MP3 de' if is_mp3 else 'Descargar videos de'} {_esc(name)}</h2>"
+        + (
+            f"<p>Con DDX.cl puedes bajar el audio en MP3 de {_esc(what)} pegando el enlace del post. "
+            f"Elige la opción «Solo audio» y guarda la pista en tu dispositivo.</p>"
+            if is_mp3 else
+            f"<p>Con DDX.cl puedes bajar {_esc(what)} pegando el enlace del post. "
+            f"Detecta la fuente automáticamente y te muestra las calidades disponibles.</p>"
+        ) +
         f"{faq_html}</section>"
     )
     page = page.replace("</main>", f"{seo_block}\n  </main>", 1)
@@ -1877,7 +1896,7 @@ def render_seo_page(slug: str) -> Optional[str]:
         "@graph": [
             {
                 "@type": "WebApplication",
-                "name": f"DDX.cl — Bajar videos de {name}",
+                "name": f"DDX.cl — {'Bajar MP3 de' if is_mp3 else 'Bajar videos de'} {name}",
                 "url": url,
                 "applicationCategory": "MultimediaApplication",
                 "operatingSystem": "All",
@@ -1896,7 +1915,7 @@ def render_seo_page(slug: str) -> Optional[str]:
                 "@type": "BreadcrumbList",
                 "itemListElement": [
                     {"@type": "ListItem", "position": 1, "name": "DDX.cl", "item": SITE_URL + "/"},
-                    {"@type": "ListItem", "position": 2, "name": f"Bajar video de {name}", "item": url},
+                    {"@type": "ListItem", "position": 2, "name": h1_text, "item": url},
                 ],
             },
         ],
@@ -1911,9 +1930,14 @@ def render_seo_page(slug: str) -> Optional[str]:
     return page
 
 
+@app.get("/bajar-mp3-{slug}")
+async def seo_mp3_page(slug: str):
+    return await seo_platform_page(slug, "mp3")
+
+
 @app.get("/bajar-video-{slug}")
-async def seo_platform_page(slug: str):
-    page = render_seo_page(slug)
+async def seo_platform_page(slug: str, mode: str = "video"):
+    page = render_seo_page(slug, "mp3" if mode == "mp3" else "video")
     if page is None:
         raise HTTPException(status_code=404, detail="Página no encontrada")
     return Response(
@@ -1931,7 +1955,11 @@ async def robots_txt():
 
 @app.get("/sitemap.xml")
 async def sitemap_xml():
-    urls = [(f"{SITE_URL}/", "1.0")] + [(f"{SITE_URL}/bajar-video-{s}", "0.8") for s in SEO_PLATFORMS]
+    urls = (
+        [(f"{SITE_URL}/", "1.0")]
+        + [(f"{SITE_URL}/bajar-video-{s}", "0.8") for s in SEO_PLATFORMS]
+        + [(f"{SITE_URL}/bajar-mp3-{s}", "0.7") for s in SEO_PLATFORMS]
+    )
     items = "".join(
         f"<url><loc>{u}</loc><changefreq>weekly</changefreq><priority>{pr}</priority></url>" for u, pr in urls
     )
