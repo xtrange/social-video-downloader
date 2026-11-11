@@ -1889,7 +1889,8 @@ def render_seo_page(slug: str, mode: str = "video") -> Optional[str]:
         ) +
         f"{faq_html}</section>"
     )
-    page = page.replace("</main>", f"{seo_block}\n  </main>", 1)
+    # Reemplazar el bloque seo-copy genérico de la portada por el específico de la plataforma
+    page = re.sub(r'<section class="seo-copy">.*?</section>', lambda m: seo_block, page, count=1, flags=re.S)
 
     ld = {
         "@context": "https://schema.org",
