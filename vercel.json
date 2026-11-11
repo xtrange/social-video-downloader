@@ -15,11 +15,25 @@
   ],
   "routes": [
     {
+      "src": "/(.*)",
+      "headers": {
+        "X-Frame-Options": "SAMEORIGIN",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=()"
+      },
+      "continue": true
+    },
+    {
       "src": "/api/(.*)",
       "dest": "app.py"
     },
     {
-      "src": "/(robots\\.txt|sitemap\\.xml)",
+      "src": "/robots\\.txt",
+      "dest": "/static/robots.txt"
+    },
+    {
+      "src": "/sitemap\\.xml",
       "dest": "app.py"
     },
     {

@@ -1858,9 +1858,13 @@ def render_seo_page(slug: str, mode: str = "video") -> Optional[str]:
     page = re.sub(r'(<meta property="og:title" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(title)}{m.group(2)}", page, count=1)
     page = re.sub(r'(<meta property="og:description" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(desc)}{m.group(2)}", page, count=1)
     page = page.replace('<meta property="og:url" content="https://ddx.cl/" />', f'<meta property="og:url" content="{url}" />')
+    page = re.sub(r'(<meta name="twitter:title" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(title)}{m.group(2)}", page, count=1)
+    page = re.sub(r'(<meta name="twitter:description" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(desc)}{m.group(2)}", page, count=1)
     h1_text = f"Bajar MP3 de {name}" if is_mp3 else f"Bajar video de {name}"
     page = page.replace("<h1>Descargar video</h1>", f"<h1>{_esc(h1_text)}</h1>")
     page = page.replace('placeholder="https://..."', f'placeholder="{_esc(example)}"')
+    current_href = f"/{'bajar-mp3' if is_mp3 else 'bajar-video'}-{slug}"
+    page = page.replace(f'href="{current_href}"', f'href="{current_href}" aria-current="page"', 1)
 
     if is_mp3:
         faqs = [
@@ -1889,7 +1893,16 @@ def render_seo_page(slug: str, mode: str = "video") -> Optional[str]:
         ) +
         f"{faq_html}</section>"
     )
-    page = page.replace("</main>", f"{seo_block}\n  </main>", 1)
+    if "<!-- SEO_COPY_START -->" in page and "<!-- SEO_COPY_END -->" in page:
+        page = re.sub(
+            r"<!-- SEO_COPY_START -->.*?<!-- SEO_COPY_END -->",
+            lambda _: seo_block,
+            page,
+            count=1,
+            flags=re.S,
+        )
+    else:
+        page = page.replace("</main>", f"{seo_block}\n  </main>", 1)
 
     ld = {
         "@context": "https://schema.org",

@@ -1,5 +1,6 @@
 :root,
 :root[data-theme="light"] {
+  color-scheme: light;
   --bg: #f8fafc;
   --surface: #ffffff;
   --subtle: #f1f5f9;
@@ -35,6 +36,7 @@
 }
 
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #0b0f17;
   --surface: #111827;
   --subtle: #1e293b;
@@ -60,17 +62,24 @@ body {
   background-color: var(--bg);
   color: var(--text);
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
   padding: 1.5rem;
   -webkit-font-smoothing: antialiased;
   transition: background-color 180ms ease, color 180ms ease;
 }
 
+:where(a:any-link, button):focus-visible {
+  outline: 2px solid var(--soft-btn-text);
+  outline-offset: 2px;
+}
+
 .shell {
   width: 100%;
   max-width: 540px;
+  margin-block: auto;
 }
 
 .card {
@@ -129,6 +138,14 @@ body {
   color: var(--soft-btn-text);
   border: 1px solid var(--soft-btn-border);
   letter-spacing: -0.02em;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  transition: background-color 150ms ease;
+}
+
+.brand-badge:hover {
+  background-color: var(--soft-btn-hover);
 }
 
 .card-header h1 {
@@ -670,4 +687,67 @@ body {
   font-size: 0.82rem;
   color: var(--text);
   margin: 0.8rem 0 0.15rem;
+}
+
+.site-footer {
+  width: 100%;
+  max-width: 540px;
+  margin-top: 2.5rem;
+  border-top: 1px solid var(--border);
+  padding: 1.75rem 0.25rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.footer-container {
+  width: 100%;
+}
+
+.footer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 1.5rem 2rem;
+  margin-bottom: 1.5rem;
+}
+
+.footer-col h3 {
+  font-size: 0.84rem;
+  color: var(--text);
+  margin-bottom: 0.6rem;
+  font-weight: 600;
+}
+
+.footer-col ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.footer-col li {
+  margin-bottom: 0.35rem;
+}
+
+.footer-col a {
+  color: var(--muted);
+  text-decoration: none;
+  display: inline-block;
+  padding-block: 0.15rem;
+  transition: color 150ms ease;
+}
+
+.footer-col a:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.footer-col a[aria-current="page"] {
+  color: var(--soft-btn-text);
+  font-weight: 600;
+}
+
+.footer-bottom {
+  text-align: center;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  font-size: 0.76rem;
 }
