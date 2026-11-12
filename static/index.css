@@ -325,8 +325,8 @@ body {
 
 .thumb-wrap {
   width: 100%;
-  aspect-ratio: 16 / 9;
-  max-height: 380px;
+  max-width: 100%;
+  margin: 0 auto;
   border-radius: 10px;
   overflow: hidden;
   background-color: #000000;
@@ -337,13 +337,27 @@ body {
   justify-content: center;
   position: relative;
   cursor: pointer;
-  transition: opacity 150ms ease;
+  transition: max-width 200ms ease, aspect-ratio 200ms ease;
+  aspect-ratio: var(--video-aspect, 16 / 9);
+  max-height: 520px;
+}
+
+.thumb-wrap.is-vertical {
+  max-width: 310px;
+  max-height: 540px;
+}
+
+.thumb-wrap.is-square {
+  max-width: 420px;
+  max-height: 420px;
+}
+
+.thumb-wrap.is-horizontal {
+  max-width: 100%;
+  max-height: 380px;
 }
 
 .thumb-wrap.playing {
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  max-height: 420px;
   background-color: #000000;
   cursor: default;
 }
@@ -351,7 +365,7 @@ body {
 .video-thumb {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: cover;
   background-color: #000000;
   display: block;
 }
@@ -369,6 +383,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  min-height: 200px;
 }
 
 .thumb-play-overlay {

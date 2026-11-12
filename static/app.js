@@ -473,6 +473,20 @@
     return row;
   }
 
+  function adjustAspectRatio(w, h) {
+    if (!thumbWrap || !w || !h) return;
+    const ratio = w / h;
+    thumbWrap.style.setProperty('--video-aspect', `${w} / ${h}`);
+    thumbWrap.classList.remove('is-vertical', 'is-square', 'is-horizontal');
+    if (ratio < 0.85) {
+      thumbWrap.classList.add('is-vertical');
+    } else if (ratio >= 0.85 && ratio <= 1.15) {
+      thumbWrap.classList.add('is-square');
+    } else {
+      thumbWrap.classList.add('is-horizontal');
+    }
+  }
+
   function updateThumbnail(thumbUrl, hasPreviewVideo) {
     currentThumbUrl = thumbUrl || '';
     if (dlThumbBtn) {
@@ -485,6 +499,9 @@
     if (thumbUrl) {
       const proxied = `/api/thumbnail?url=${encodeURIComponent(thumbUrl)}`;
       videoThumb.onload = () => {
+        if (videoThumb.naturalWidth && videoThumb.naturalHeight) {
+          adjustAspectRatio(videoThumb.naturalWidth, videoThumb.naturalHeight);
+        }
         if (!isPlayingPreview) {
           videoThumb.classList.remove('hidden');
           thumbPlaceholder.classList.add('hidden');
@@ -504,6 +521,10 @@
       videoThumb.classList.add('hidden');
       thumbPlaceholder.classList.remove('hidden');
       if (thumbPlayOverlay) thumbPlayOverlay.classList.add('hidden');
+      if (thumbWrap) {
+        thumbWrap.style.removeProperty('--video-aspect');
+        thumbWrap.classList.remove('is-vertical', 'is-square', 'is-horizontal');
+      }
     }
   }
 
@@ -641,6 +662,11 @@
           triedFallback = true;
           videoPreviewPlayer.src = currentPreviewFallbackUrl;
           videoPreviewPlayer.play().catch(() => {});
+        }
+      };
+      videoPreviewPlayer.onloadedmetadata = () => {
+        if (videoPreviewPlayer.videoWidth && videoPreviewPlayer.videoHeight) {
+          adjustAspectRatio(videoPreviewPlayer.videoWidth, videoPreviewPlayer.videoHeight);
         }
       };
       videoPreviewPlayer.src = currentPreviewPrimaryUrl;
