@@ -216,7 +216,36 @@
     feedbackBox.classList.add('hidden');
   }
 
-  async function processUrl(rawUrl) {
+  // Google Analytics / GTM event helper
+  function trackEvent(eventName, params) {
+    try {
+      if (typeof window.gtag === 'function') {
+        window.gtag('event', eventName, params || {});
+      }
+    } catch (_) {}
+  }
+
+  function detectPlatformClient(rawUrl) {
+    try {
+      const h = new URL(/^https?:\/\//i.test(rawUrl) ? rawUrl : 'https://' + rawUrl).hostname.toLowerCase();
+      if (h.includes('instagram.com') || h.includes('instagr.am')) return 'instagram';
+      if (h.includes('tiktok.com')) return 'tiktok';
+      if (h.includes('facebook.com') || h.includes('fb.watch') || h.includes('fb.com')) return 'facebook';
+      if (h.includes('twitter.com') || h === 'x.com' || h.endsWith('.x.com')) return 'x';
+      if (h.includes('youtube.com') || h === 'youtu.be') return 'youtube';
+      if (h.includes('pinterest.') || h === 'pin.it') return 'pinterest';
+      if (h.includes('threads.net') || h.includes('threads.com')) return 'threads';
+      if (h.includes('linkedin.com') || h === 'lnkd.in') return 'linkedin';
+      if (h.includes('reddit.com') || h.includes('redd.it')) return 'reddit';
+      if (h.includes('twitch.tv')) return 'twitch';
+      if (h.includes('kick.com')) return 'kick';
+      if (h.includes('vimeo.com')) return 'vimeo';
+      if (h.includes('bsky.app')) return 'bluesky';
+    } catch (_) {}
+    return 'unknown';
+  }
+
+  async function processUrl(rawUrl, entryMethod = 'form') {
     const url = extractCleanUrl(rawUrl);
     if (url && urlInput.value.trim() !== url) {
       urlInput.value = url;
@@ -233,6 +262,9 @@
       return;
     }
 
+    const guessedPlatform = detectPlatformClient(url);
+    trackEvent('analyze_url', { platform: guessedPlatform, entry_method: entryMethod });
+
     resultBox.classList.add('hidden');
     loadingBox.classList.remove('hidden');
     setButtonMode('loading');
@@ -248,9 +280,19 @@
         throw new Error(data.detail || 'No se pudo analizar el enlace.');
       }
       analyzedUrl = url;
+      trackEvent('analyze_result', {
+        platform: data.platform || guessedPlatform,
+        status: 'success',
+        is_carousel: Array.isArray(data.carousel_items) && data.carousel_items.length > 1
+      });
       renderOptions(data);
       setButtonMode('reset');
     } catch (err) {
+      trackEvent('analyze_result', {
+        platform: guessedPlatform,
+        status: 'error',
+        error_message: String(err.message || '').slice(0, 100)
+      });
       setButtonMode('continue');
       showMessage(err.message || 'Enlace no compatible.');
     } finally {
@@ -307,6 +349,7 @@
     btn.classList.remove('done');
     btn.classList.add('downloading');
     hideMessage();
+    trackEvent('download_click', { platform, format: ext, quality: cleanQualityLabel });
 
     let prepPct = 4;
     btn.style.setProperty('--dl-progress', `${prepPct}%`);
@@ -322,6 +365,7 @@
 
     try {
       let blob = null;
+      let deliveryMethod = 'server_proxy';
       let filename = buildDdxFilename(platform, cleanQualityLabel, ext, author, title, slideIdx);
 
       // PALANCA 1: Intento de descarga 100% directa Navegador <- CDN de origen (0 consumo en Vercel)
@@ -338,6 +382,7 @@
             const candidateBlob = await readResponseWithProgress(directResp, opt.meta, prepPct, btn, ext);
             if (candidateBlob && candidateBlob.size > 1024) {
               blob = candidateBlob;
+              deliveryMethod = 'direct_cdn';
             }
           }
         } catch (_) {}
@@ -393,6 +438,13 @@
       a.remove();
       setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
 
+      trackEvent('download_complete', {
+        platform,
+        format: ext,
+        quality: cleanQualityLabel,
+        delivery: deliveryMethod
+      });
+
       // Mejora 5: Habilitar botón nativo "Compartir" en móviles (Web Share API) con el archivo descargado
       if (shareBtn && typeof navigator.share === 'function') {
         try {
@@ -407,6 +459,7 @@
                   title: filename,
                   text: 'Descargado en ddx.cl'
                 });
+                trackEvent('share_file', { platform, format: ext });
               } catch (_) {}
             };
           }
@@ -425,6 +478,11 @@
       }, 2400);
     } catch (err) {
       clearInterval(prepTimer);
+      trackEvent('download_error', {
+        platform,
+        format: ext,
+        error_message: String(err.message || '').slice(0, 100)
+      });
       btn.classList.remove('downloading', 'done');
       btn.style.removeProperty('--dl-progress');
       btn.disabled = false;
@@ -649,6 +707,7 @@
     thumbWrap.addEventListener('click', () => {
       if (isPlayingPreview || !currentPreviewPrimaryUrl) return;
       isPlayingPreview = true;
+      trackEvent('preview_play', { platform: (currentData && currentData.platform) || 'unknown' });
       thumbWrap.classList.add('playing');
       videoThumb.classList.add('hidden');
       thumbPlaceholder.classList.add('hidden');
@@ -721,6 +780,7 @@
         a.click();
         a.remove();
         setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+        trackEvent('download_thumb', { platform: currentData.platform || 'unknown' });
         dlThumbBtn.textContent = '✓ Portada';
         dlThumbBtn.classList.add('copied');
         setTimeout(() => {
@@ -739,6 +799,7 @@
       if (!currentDescription) return;
       try {
         await navigator.clipboard.writeText(currentDescription);
+        trackEvent('copy_description', { platform: (currentData && currentData.platform) || 'unknown' });
         copyDescBtn.textContent = '✓ Copiado';
         copyDescBtn.classList.add('copied');
         setTimeout(() => {
@@ -761,7 +822,7 @@
           clearBtn.classList.remove('hidden');
           pasteBtn.classList.add('hidden');
           window.history.replaceState(null, '', '/');
-          processUrl(cleanQueryUrl);
+          processUrl(cleanQueryUrl, 'pwa_share');
           return;
         }
       }
@@ -785,7 +846,7 @@
           clearBtn.classList.remove('hidden');
           pasteBtn.classList.add('hidden');
           window.history.replaceState(null, '', '/');
-          processUrl(cleanedPrefixUrl);
+          processUrl(cleanedPrefixUrl, 'url_prefix');
         }
       }
     } catch (_) {}
@@ -810,7 +871,7 @@
       urlInput.value = cleanVal;
       clearBtn.classList.toggle('hidden', !cleanVal);
       pasteBtn.classList.toggle('hidden', !!cleanVal);
-      if (cleanVal) processUrl(cleanVal);
+      if (cleanVal) processUrl(cleanVal, 'paste');
     }, 30);
   });
 
@@ -829,7 +890,7 @@
       urlInput.value = cleanVal;
       clearBtn.classList.remove('hidden');
       pasteBtn.classList.add('hidden');
-      processUrl(cleanVal);
+      processUrl(cleanVal, 'global_paste');
     }
   });
 
@@ -852,7 +913,7 @@
         const cleanVal = extractCleanUrl(text);
         urlInput.value = cleanVal;
         urlInput.dispatchEvent(new Event('input'));
-        processUrl(cleanVal);
+        processUrl(cleanVal, 'paste_btn');
       } else {
         urlInput.focus();
       }
@@ -870,7 +931,7 @@
     if (isResetMode) {
       resetAll();
     } else {
-      processUrl(urlInput.value);
+      processUrl(urlInput.value, 'form');
     }
   });
 

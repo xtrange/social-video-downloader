@@ -1857,6 +1857,8 @@ def render_seo_page(slug: str, mode: str = "video") -> Optional[str]:
     page = page.replace('<link rel="canonical" href="https://ddx.cl/" />', f'<link rel="canonical" href="{url}" />')
     page = re.sub(r'(<meta property="og:title" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(title)}{m.group(2)}", page, count=1)
     page = re.sub(r'(<meta property="og:description" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(desc)}{m.group(2)}", page, count=1)
+    page = re.sub(r'(<meta name="twitter:title" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(title)}{m.group(2)}", page, count=1)
+    page = re.sub(r'(<meta name="twitter:description" content=")[^"]*(")', lambda m: f"{m.group(1)}{_esc(desc)}{m.group(2)}", page, count=1)
     page = page.replace('<meta property="og:url" content="https://ddx.cl/" />', f'<meta property="og:url" content="{url}" />')
     h1_text = f"Bajar MP3 de {name}" if is_mp3 else f"Bajar video de {name}"
     page = page.replace("<h1>Descargar video</h1>", f"<h1>{_esc(h1_text)}</h1>")
@@ -1931,12 +1933,14 @@ def render_seo_page(slug: str, mode: str = "video") -> Optional[str]:
     return page
 
 
-@app.get("/bajar-mp3-{slug}")
+@app.api_route("/bajar-mp3-{slug}", methods=["GET", "HEAD"])
+@app.api_route("/bajar-mp3-{slug}/", methods=["GET", "HEAD"])
 async def seo_mp3_page(slug: str):
     return await seo_platform_page(slug, "mp3")
 
 
-@app.get("/bajar-video-{slug}")
+@app.api_route("/bajar-video-{slug}", methods=["GET", "HEAD"])
+@app.api_route("/bajar-video-{slug}/", methods=["GET", "HEAD"])
 async def seo_platform_page(slug: str, mode: str = "video"):
     page = render_seo_page(slug, "mp3" if mode == "mp3" else "video")
     if page is None:
@@ -1948,21 +1952,22 @@ async def seo_platform_page(slug: str, mode: str = "video"):
     )
 
 
-@app.get("/robots.txt")
+@app.api_route("/robots.txt", methods=["GET", "HEAD"])
 async def robots_txt():
     content = "User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: https://ddx.cl/sitemap.xml\n"
     return PlainTextResponse(content)
 
 
-@app.get("/sitemap.xml")
+@app.api_route("/sitemap.xml", methods=["GET", "HEAD"])
 async def sitemap_xml():
+    lastmod = "2026-11-13"
     urls = (
         [(f"{SITE_URL}/", "1.0")]
         + [(f"{SITE_URL}/bajar-video-{s}", "0.8") for s in SEO_PLATFORMS]
         + [(f"{SITE_URL}/bajar-mp3-{s}", "0.7") for s in SEO_PLATFORMS]
     )
     items = "".join(
-        f"<url><loc>{u}</loc><changefreq>weekly</changefreq><priority>{pr}</priority></url>" for u, pr in urls
+        f"<url><loc>{u}</loc><lastmod>{lastmod}</lastmod><changefreq>weekly</changefreq><priority>{pr}</priority></url>" for u, pr in urls
     )
     xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</urlset>'
     return Response(content=xml, media_type="application/xml")
